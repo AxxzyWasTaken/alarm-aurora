@@ -151,5 +151,107 @@ class TreeValidationTests(unittest.TestCase):
             validator.validate(self.trees, COMMIT)
 
 
+FAKE_FLATPAK = r'''#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_LOG"
+case $1 in
+  remotes) [ ! -f "$TEST_REMOTES" ] || cat "$TEST_REMOTES" ;;
+  remote-add) printf '%s\n' "${@: -2:1}" >> "$TEST_REMOTES" ;;
+  list) printf '%s\n' org.freedesktop.Platform.GL.aurora/aarch64/26.08 org.freedesktop.Platform.GL.aurora/x86_64/26.08 ;;
+  override) printf '%s\n' "${3#--env=}" >> "$TEST_OVERRIDES" ;;
+  build-export)
+    work=${@: -2:1}
+    [ -x "$work/files/fex/FEX" ] && [ -f "$work/files/fex/GuestThunks/libVDSO-guest.so" ] && [ ! -e "$work/files/GuestThunks" ] && echo "exported with FEX ${@: -1}" >> "$TEST_LOG"
+    mkdir -p "${@: -3:1}" ;;
+esac
+'''
+
+
+class HelperTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = self.root = Path(self.tmp.name)
+        repo = root / 'repo'
+        (repo / 'objects').mkdir(parents=True)
+        refs = repo / 'refs/heads/runtime/org.freedesktop.Platform.GL.aurora/aarch64'
+        refs.mkdir(parents=True)
+        (refs / '26.08').touch()
+        self.trees, self.fex, self.overrides = root / 'trees', root / 'fex', root / 'global'
+        tree = self.trees / '26.08'
+        (tree / 'files').mkdir(parents=True)
+        (tree / 'files/.aurora-mesa-commit').write_text(COMMIT)
+        (tree / 'metadata').touch()
+        self.helper = root / 'helper'
+        self.helper.write_text((GL / 'aurora-flatpak-gl').read_text()
+            .replace('x86_trees=/usr/share/aurora-flatpak-gl/x86_64', f'x86_trees={self.trees}')
+            .replace('fex=/usr/lib/x86_64-linux-gnu/GL/aurora/fex', f'fex={self.fex}')
+            .replace('x86_repo=/var/lib/aurora-flatpak-gl/repo', f'x86_repo={root}/state/repo'))
+        bin_dir = root / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'flatpak').write_text(FAKE_FLATPAK)
+        (bin_dir / 'flatpak').chmod(0o755)
+        self.log = root / 'calls'
+        self.env = {**os.environ, 'PATH': f'{bin_dir}:' + os.environ['PATH'], 'TMPDIR': str(root),
+                    'AURORA_FLATPAK_GL_REPO': str(repo),
+                    'AURORA_FLATPAK_GL_OVERRIDES': str(self.overrides),
+                    'TEST_LOG': str(self.log), 'TEST_OVERRIDES': str(self.overrides),
+                    'TEST_REMOTES': str(root / 'remotes')}
+
+    def run_helper(self, action):
+        return subprocess.run(['bash', str(self.helper), action], env=self.env).returncode
+
+    def test_both_architectures_and_the_x86_extension_with_fex(self):
+        (self.fex / 'GuestThunks').mkdir(parents=True)
+        (self.fex / 'FEX').touch(mode=0o755)
+        (self.fex / 'GuestThunks/libVDSO-guest.so').touch()
+        # The value the aarch64-only release wrote is replaced, not kept as an admin choice.
+        self.overrides.write_text('[Environment]\nVK_DRIVER_FILES=/usr/lib/aarch64-linux-gnu/GL/vulkan/icd.d/'
+                                  'asahi_icd.aarch64.json:/usr/lib/aarch64-linux-gnu/GL/vulkan/icd.d/lvp_icd.aarch64.json\n'
+                                  'OTHER=keep\n')
+        for _ in range(2):
+            self.assertEqual(self.run_helper('enable'), 0)
+        calls = self.log.read_text()
+        self.assertIn('install --system --noninteractive -y --or-update aurora-gl '
+                      'runtime/org.freedesktop.Platform.GL.aurora/aarch64/26.08', calls)
+        self.assertIn('install --system --noninteractive -y --or-update aurora-gl-x86_64 '
+                      'runtime/org.freedesktop.Platform.GL.aurora/x86_64/26.08', calls)
+        self.assertEqual(calls.count('exported with FEX 26.08'), 2)
+        self.assertIn('build-export --runtime --files=files --arch=x86_64', calls)
+        values = dict(l.split('=', 1) for l in self.overrides.read_text().splitlines() if '=' in l)
+        self.assertEqual(values['VK_DRIVER_FILES'].split(':'), [
+            '/usr/lib/aarch64-linux-gnu/GL/vulkan/icd.d/asahi_icd.aarch64.json',
+            '/usr/lib/aarch64-linux-gnu/GL/vulkan/icd.d/lvp_icd.aarch64.json',
+            '/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/asahi_icd.x86_64.json',
+            '/usr/lib/x86_64-linux-gnu/GL/vulkan/icd.d/lvp_icd.x86_64.json'])
+        self.assertEqual(values['__EGL_VENDOR_LIBRARY_FILENAMES'],
+                         '/usr/lib/aarch64-linux-gnu/GL/glvnd/egl_vendor.d/50_mesa.json:'
+                         '/usr/lib/x86_64-linux-gnu/GL/glvnd/egl_vendor.d/50_mesa.json')
+        self.assertEqual(values['LIBGL_DRIVERS_PATH'],
+                         '/usr/lib/aarch64-linux-gnu/GL/lib/dri:/usr/lib/x86_64-linux-gnu/GL/lib/dri')
+        self.assertEqual(values['FEX_THUNKGUESTLIBS'], '/usr/lib/x86_64-linux-gnu/GL/aurora/fex/GuestThunks')
+        self.assertEqual(self.overrides.read_text().count('VK_DRIVER_FILES='), 1)
+        self.assertEqual(self.run_helper('disable'), 0)
+        self.assertEqual(self.overrides.read_text(), '[Environment]\nOTHER=keep\n')
+        calls = self.log.read_text()
+        for ref in ('aarch64', 'x86_64'):
+            self.assertIn(f'uninstall --system --noninteractive -y runtime/org.freedesktop.Platform.GL.aurora/{ref}/26.08', calls)
+        self.assertIn('remote-delete --system --force aurora-gl-x86_64', calls)
+        self.assertFalse((self.root / 'state/repo').exists())
+
+    def test_trees_without_fex_install_no_x86_extension(self):
+        self.assertNotEqual(self.run_helper('enable'), 0)
+        calls = self.log.read_text()
+        self.assertNotIn('--arch=x86_64', calls)
+        self.assertIn('aarch64/26.08', calls)
+        # FEX without its guest vDSO thunk is also incomplete and rejected.
+        self.fex.mkdir()
+        (self.fex / 'FEX').touch(mode=0o755)
+        self.assertNotEqual(self.run_helper('enable'), 0)
+        self.assertNotIn('--arch=x86_64', self.log.read_text())
+        hook = (GL / '70-aurora-flatpak-gl-x86_64.hook').read_text()
+        self.assertIn('Target = usr/lib/x86_64-linux-gnu/GL/aurora/fex/FEX\n', hook)
+        self.assertIn('Target = usr/lib/x86_64-linux-gnu/GL/aurora/fex/GuestThunks/libVDSO-guest.so\n', hook)
+
+
 if __name__ == '__main__':
     unittest.main()
