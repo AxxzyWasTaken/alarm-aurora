@@ -11,7 +11,7 @@ install=aurora-sep.install
 # the Plasma power-button default is the owner's to edit.
 backup=('etc/xdg/powerdevilrc')
 source=('load-driver' 'aurora-sep.service' 'fprintd-aurora.conf' 'README.md' 'XART-SAFETY.md' 'OS-IDENTITY.md' 'aurora-sep-ready' 'aurora-sep-ready.service' 'fprintd-no-timeout.conf.in' 'aurora-touchid-setup' 'extract-mesa-calibration' 'aurora-sep.timer' 'aurora-sep-load.conf' 'sensor-present' 'aurora-sep-greeter-fingerprint' 'aurora-sep-greeter-fingerprint.service' 'logind-aurora-sep.conf' 'provenance.json' 'aurora-touchid-setup.service' 'touchid-setup-needed' 'touchid-pam' 'aurora-sep-touchid-pam.hook' 'powerdevilrc' 'aurora-sep-modprobe.conf' 'aurora-sep' 'sleep-aurora-sep.conf' '20-aurora-suspend.conf')
-sha256sums=('3832041c7dcc9564a789b12f21a09a9d787fd8e24890320686552c3ad654e322'
+sha256sums=('278ca7b39853db6c5b122125e781de076206f8dd884830c5284ae9f26384c3cf'
             'ef6e9067fe20b05c64bebe8445d1ea18b2f9800721522c3e84be21a2c47bb4eb'
             'e7898b3e409bde5b23453e22448b434dc4861642f575dab56148c78114f577b8'
             '9e33c23b37d59802b7c4738731c5b58de787bb1b553de7a8e7963728d759259d'
