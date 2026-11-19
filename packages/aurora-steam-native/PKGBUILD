@@ -17,7 +17,7 @@ checkdepends=('python' 'desktop-file-utils')
 source=("aurora-steam-native-$_commit.tar.gz::https://codeload.github.com/aurora-silicon/aurora-steam-native/tar.gz/$_commit"
         steam steam.desktop)
 sha256sums=("$_sha256"
-            'cbfe18dd938fcf333903101a5d0aa01c87734d77a87f9e51a1565f63ddf6ab15'
+            'c3ee91e8191b234cfcc71cff3d5e151eef9f387686bf3978c9c50f3d72b5b6bb'
             '1e2f858be0c8d365131cd1fc7072df68f3a1a8b990a2ba479aa82b1f8e692b6b')
 
 prepare() {
@@ -67,10 +67,11 @@ package_aurora-steam-native() {
 
 package_steam() {
   pkgdesc='Steam for Aurora (native ARM64 client)'
-  # `steam` registers each game's processes with GameMode while the game runs
-  # (busctl from systemd, pgrep from procps-ng); aurora-gamemode brings
-  # gamemoded and Aurora's settings. AURORA_STEAM_GAMEMODE=0 turns it off.
-  depends=("aurora-steam-native=$epoch:$pkgver-$pkgrel" 'aurora-gamemode' 'systemd' 'procps-ng')
+  # `steam` registers each process Steam tracks for a game with GameMode
+  # (an inotify watcher on the client's gameprocess_log.txt, busctl from
+  # systemd); aurora-gamemode brings gamemoded and Aurora's settings.
+  # AURORA_STEAM_GAMEMODE=0 turns it off.
+  depends=("aurora-steam-native=$epoch:$pkgver-$pkgrel" 'aurora-gamemode' 'python' 'systemd')
   install -Dm755 "$srcdir/steam.aurora" "$pkgdir/usr/bin/steam"
   install -Dm644 "$srcdir/steam.desktop" "$pkgdir/usr/share/applications/steam.desktop"
 }
