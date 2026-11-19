@@ -217,5 +217,37 @@ class HelperTests(unittest.TestCase):
         self.assertIn('aarch64/26.08', calls)
 
 
+class ExportWrapperTests(unittest.TestCase):
+    def test_x86_entries_start_in_a_4k_tree_and_stale_copies_go(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            exports, out = root / 'exports', root / 'out'
+            exports.mkdir()
+            out.mkdir()
+            (exports / 'org.x.X.desktop').write_text(
+                '[Desktop Entry]\nExec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=x org.x.X @@u %u @@\n'
+                'TryExec=/usr/bin/flatpak\n[Desktop Action c]\nExec=/usr/bin/flatpak run --arch=x86_64 org.x.X config\n')
+            (exports / 'org.a.A.desktop').write_text('[Desktop Entry]\nExec=/usr/bin/flatpak run --arch=aarch64 org.a.A\n')
+            (out / 'org.gone.desktop').write_text('stale')
+            env = {**os.environ, 'AURORA_FLATPAK_EXPORTS': str(exports), 'AURORA_FLATPAK_X86_EXPORTS': str(out)}
+            for _ in range(2):
+                subprocess.run(['bash', str(GL / 'aurora-flatpak-x86-exports')], env=env, check=True)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ['org.x.X.desktop'])
+            self.assertEqual([l for l in (out / 'org.x.X.desktop').read_text().splitlines() if l.startswith('Exec=')], [
+                'Exec=/usr/bin/userpages 4k /usr/bin/flatpak run --branch=stable --arch=x86_64 --command=x org.x.X @@u %u @@',
+                'Exec=/usr/bin/userpages 4k /usr/bin/flatpak run --arch=x86_64 org.x.X config'])
+
+    def test_session_lists_the_copies_ahead_of_flatpak(self):
+        out = subprocess.check_output(['sh', str(GL / '61-aurora-flatpak-x86-exports')],
+                                      env={'XDG_DATA_DIRS': '/var/lib/flatpak/exports/share:/usr/share'}, text=True)
+        self.assertEqual(out, 'XDG_DATA_DIRS=/var/lib/aurora-flatpak-gl/exports/share:/var/lib/flatpak/exports/share:/usr/share\n')
+        again = subprocess.check_output(['sh', str(GL / '61-aurora-flatpak-x86-exports')],
+                                        env={'XDG_DATA_DIRS': out.strip().split('=', 1)[1]}, text=True)
+        self.assertEqual(again, '')
+        recipe = (GL / 'PKGBUILD').read_text()
+        self.assertIn('"$pkgdir/usr/lib/systemd/system/paths.target.wants/aurora-flatpak-x86-exports.path"', recipe)
+        self.assertIn('"aurora-flatpak-gl-x86_64=$epoch:$pkgver-$pkgrel"', recipe)
+
+
 if __name__ == '__main__':
     unittest.main()
