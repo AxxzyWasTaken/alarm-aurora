@@ -1,9 +1,11 @@
 """FEX and Steam come from Aurora under the names users type."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,7 +129,51 @@ class FexSteamTests(unittest.TestCase):
         for source, digest in sources('aurora-steam-native'):
             if '://' not in source:
                 self.assertEqual(hashlib.sha256((d / source).read_bytes()).hexdigest(), digest)
+        # Games run under GameMode with Aurora's settings; upgrades bring it.
+        self.assertIn('aurora-gamemode', field('aurora-steam-native', 'package_steam', 'depends'))
+        self.assertIn('AURORA_STEAM_GAMEMODE', (d / 'steam').read_text())
         subprocess.run(['bash', '-n', str(d / 'steam')], check=True)
+
+    def test_steam_registers_each_game_process_with_gamemode(self):
+        d = ROOT / 'packages/aurora-steam-native'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lib, home, stubs = root / 'lib', root / 'home', root / 'stubs'
+            for path in (lib / 'bin', home / 'client/steamrtarm64', stubs):
+                path.mkdir(parents=True)
+            (home / '.steam').mkdir()
+            (home / '.steam/root').symlink_to(home / 'client')
+            log = root / 'log'
+
+            def script(path, body):
+                path.write_text('#!/bin/bash\n' + body)
+                path.chmod(0o755)
+            script(home / 'client/steamrtarm64/steam', '')
+            # The client stays up long enough for one scan of a game's process tree.
+            script(lib / 'bin/steam-native4k', 'sleep 2\n')
+            script(root / 'userpages', '')
+            # A game: reaper 100 with children 101 and 102, and 103 below 102.
+            script(stubs / 'pgrep', f'echo "pgrep $*" >> {log}\n'
+                   'case "$*" in\n'
+                   '  *"reaper SteamLaunch"*) echo 100;;\n'
+                   '  "-d, -P 100") echo 101,102;;\n'
+                   '  "-d, -P 101,102") echo 103;;\n'
+                   '  *) exit 1;;\n'
+                   'esac\n')
+            script(stubs / 'busctl', f'echo "busctl $*" >> {log}\n'
+                   'case "$*" in *ListActivatableNames*) echo \'as 2 "org.freedesktop.DBus" "com.feralinteractive.GameMode"\';; esac\n')
+            wrapper = root / 'steam'
+            wrapper.write_text((d / 'steam').read_text().replace('@LIBDIR@', str(lib))
+                               .replace('@USERPAGES@', str(root / 'userpages')).replace('@USER4K_HINT@', 'hint'))
+            wrapper.chmod(0o755)
+            env = {'HOME': str(home), 'PATH': f'{stubs}:{os.environ["PATH"]}', 'USER': 'test'}
+            for setting, games in (({}, ['100', '101', '102', '103']), ({'AURORA_STEAM_GAMEMODE': '0'}, [])):
+                log.write_text('')
+                subprocess.run([str(wrapper)], env={**env, **setting}, check=True, capture_output=True, timeout=30)
+                registered = [line.split()[-1] for line in log.read_text().splitlines() if 'RegisterGameByPID ii' in line]
+                self.assertEqual(sorted(registered), games, setting)
+                if games:
+                    self.assertIn(f'pgrep -d, -u {os.getuid()} -f (^|/)reaper SteamLaunch( |$)', log.read_text())
 
     def test_fex_mounts_the_stock_guest_rootfs_below_the_aurora_mesa_layer(self):
         d = ROOT / 'packages/fex-emu'
