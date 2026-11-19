@@ -13,7 +13,7 @@ class PinTests(unittest.TestCase):
         self.assertIn(pins['aurora-firstboot']['commit'], firstboot)
         self.assertIn(pins['aurora-firstboot']['sha256'], firstboot)
         self.assertRegex(firstboot, rf"(?m)^pkgver={re.escape(pins['aurora-firstboot']['version'])}$")
-    def test_speakerguardd_v2_is_opt_in_beside_the_legacy_stack(self):
+    def test_speakerguardd_v2_switches_by_preset_beside_the_legacy_stack(self):
         pins = json.loads((ROOT / 'sources.json').read_text())['speakerguardd-v2']
         text = (ROOT / 'packages/speakerguardd-v2/PKGBUILD').read_text()
         self.assertIn(pins['sha256'], text)
@@ -36,18 +36,29 @@ class PinTests(unittest.TestCase):
         self.assertIn("'pipewire-speaker-graph>=2'", deps)
         self.assertIn('pipewire-speaker-graph=2', (ROOT / 'packages/pipewire/PKGBUILD').read_text())
         self.assertNotIn('machines.json', main)
-        # Opt-in: the default audio stack does not pull it and replaces only the retired builds.
+        # The default audio stack keeps the legacy daemons as the fallback and
+        # pulls v2 with the upgrade tool, whose preset switches a Mac at boot
+        # only on a passing self-check; it replaces only the retired builds.
         audio = (ROOT / 'packages/aurora-audio/PKGBUILD').read_text()
         self.assertIn("'speakersafetyd' 'speakerguardd' 'alsa-utils-aurora'", audio)
-        self.assertNotIn("'speakerguardd-v2'", audio)
+        self.assertIn("'speakerguardd-v2>=1.0.0alpha.1-43' 'aurora-speaker-upgrade>=0.1-0.17'", audio)
         self.assertIn("conflicts=('asahi-audio' 'asahi-audio-aurora' 'speakerguardd-v2<=1.0.0alpha.1-25')", audio)
         self.assertIn("replaces=('asahi-audio-aurora' 'speakerguardd-v2<=1.0.0alpha.1-25')", audio)
         for pkg in (ROOT / 'packages').glob('*/PKGBUILD'):
-            if pkg.parent.name == 'speakerguardd-v2':
+            if pkg.parent.name in ('speakerguardd-v2', 'aurora-audio'):
                 continue
             body = pkg.read_text()
             for m in re.finditer(r"(?ms)^\s*depends=\((.*?)\)", body):
                 self.assertNotIn('speakerguardd-v2', m.group(1), pkg)
+        up = ROOT / 'packages/aurora-speaker-upgrade'
+        upgrade = (up / 'PKGBUILD').read_text()
+        self.assertIn(json.loads((ROOT / 'sources.json').read_text())['aurora-speaker-upgrade']['commit'], upgrade)
+        self.assertEqual([l for l in (up / '90-aurora-speaker-upgrade.preset').read_text().splitlines()
+                          if l and not l.startswith('#')], ['enable aurora-speaker-upgrade.service'])
+        self.assertIn('install=aurora-speaker-upgrade.install', upgrade)
+        self.assertIn('/usr/lib/systemd/system-preset/90-aurora-speaker-upgrade.preset', upgrade)
+        self.assertIn('systemctl --preset-mode=enable-only preset aurora-speaker-upgrade.service',
+                      (up / 'aurora-speaker-upgrade.install').read_text())
     def test_diagnostics_are_opt_in_and_follow_their_pin(self):
         pin = json.loads((ROOT / 'sources.json').read_text())['aurora-diag']
         text = (ROOT / 'packages/aurora-diag/PKGBUILD').read_text()
