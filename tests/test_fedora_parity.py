@@ -87,10 +87,7 @@ class ParityTests(unittest.TestCase):
             for branch in ('25.08', '26.08'):
                 (refs / branch).touch()
             overrides.write_text('[Environment]\nVK_DRIVER_FILES=/admin/custom.json\nOTHER=keep\n')
-            helper = root / 'helper'
-            helper.write_text((GL / 'aurora-flatpak-gl').read_text()
-                .replace('repo=/usr/share/aurora-flatpak-gl/repo', f'repo={repo}')
-                .replace('overrides=/var/lib/flatpak/overrides/global', f'overrides={overrides}'))
+            helper = GL / 'aurora-flatpak-gl'
             flatpak = root / 'flatpak'
             flatpak.write_text('''#!/bin/bash
 printf '%s\n' "$*" >> "$TEST_LOG"
@@ -102,7 +99,8 @@ esac
 ''')
             flatpak.chmod(0o755)
             env = {**os.environ, 'PATH': str(root) + ':' + os.environ['PATH'],
-                   'TEST_LOG': str(log), 'TEST_OVERRIDES': str(overrides)}
+                   'TEST_LOG': str(log), 'TEST_OVERRIDES': str(overrides),
+                   'AURORA_FLATPAK_GL_REPO': str(repo), 'AURORA_FLATPAK_GL_OVERRIDES': str(overrides)}
             for action in ('enable', 'enable', 'disable'):
                 subprocess.run(['bash', str(helper), action], env=env, check=True)
             calls = log.read_text()
