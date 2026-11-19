@@ -15,6 +15,9 @@ GL = ROOT / 'packages/aurora-flatpak-gl'
 X86 = ROOT / 'packages/aurora-flatpak-gl-x86_64'
 FEX = ROOT / 'packages/fex-emu'
 BUNDLE = '/usr/lib/x86_64-linux-gnu/GL/aurora/fex'
+spec = importlib.util.spec_from_file_location('x86_tree', X86 / 'validate-tree.py')
+validator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(validator)
 COMMIT = 'c208afc352e9d4c10ee71c883a369a9079dd7d84'
 
 
@@ -71,6 +74,81 @@ class FexBundleTests(unittest.TestCase):
         for token in ('fex-emu', 'glibc', 'gcc-libs', 'libfmt', 'libxxhash'):
             self.assertIn(token, updates)
 
+
+class ManifestTests(unittest.TestCase):
+    def test_x86_extension_ships_no_fex_or_vdso_thunk(self):
+        x86_recipe = (X86 / 'PKGBUILD').read_text()
+        self.assertNotIn('_fex_commit', x86_recipe)
+        self.assertNotIn('VDSO-guest', x86_recipe)
+        self.assertNotIn('libVDSO-guest.so', x86_recipe)
+
+    def test_x86_drivers_link_no_llvm_and_live_under_the_x86_prefix(self):
+        text = (X86 / 'org.freedesktop.Platform.GL.aurora.yml.in').read_text()
+        self.assertNotIn('aarch64-linux-gnu', text)
+        mesa = text[text.index('  - name: mesa\n'):]
+        for option in ('-Dllvm=disabled', '-Dgallium-drivers=asahi,zink', '-Dvulkan-drivers=asahi',
+                       '-Dmesa-clc=system', '-Dprecomp-compiler=system'):
+            self.assertIn('      - ' + option + '\n', mesa)
+        self.assertNotIn('libLLVM', mesa)
+        self.assertIn('  - /share/build-tools\n', text)
+        self.assertIn('prefix: /usr/lib/x86_64-linux-gnu/GL/aurora\n', text)
+
+    def test_mesa_consumers_include_the_x86_extension(self):
+        for field in ('epoch', 'pkgver', 'pkgrel', '_commit', '_sha256'):
+            self.assertEqual(assignment(X86 / 'PKGBUILD', field), assignment(GL / 'PKGBUILD', field))
+
+
+class TreeValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.trees = Path(self.tmp.name)
+        elf = b'\x7fELF\x02\x01' + bytes(12) + struct.pack('<H', 62)
+        for branch in validator.BRANCHES:
+            root = self.trees / branch / 'files'
+            self.write(root / '.aurora-mesa-commit', COMMIT)
+            for name in ('lib/libvulkan_asahi.so', 'lib/libEGL_mesa.so.0', 'lib/libGLX_mesa.so.0',
+                         'lib/dri/asahi_dri.so', 'lib/dri/zink_dri.so'):
+                self.write(root / name, elf + f' Mesa (git-{COMMIT[:10]}), Borealis'.encode())
+            for path, lib in (('vulkan/icd.d/asahi_icd.x86_64.json', 'libvulkan_asahi.so'),
+                              ('glvnd/egl_vendor.d/50_mesa.json', 'libEGL_mesa.so.0')):
+                self.write(root / path, json.dumps({'ICD': {'library_path': validator.PREFIX + 'lib/' + lib}}))
+            self.write(root / 'share/drirc.d/00-hk-defaults.conf', 'hk_report_honeykrisp_driver_id')
+            self.write(self.trees / branch / 'metadata',
+                       f'[Runtime]\nname={validator.ID}\n'
+                       f'[ExtensionOf]\nref=runtime/org.freedesktop.Platform/x86_64/{branch}\npriority=10\n')
+
+    def write(self, path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value.encode() if isinstance(value, str) else value)
+
+    def test_complete_trees(self):
+        validator.validate(self.trees, COMMIT)
+
+    def test_aarch64_library_is_rejected(self):
+        self.write(self.trees / '26.08/files/lib/dri/zink_dri.so', b'\x7fELF\x02\x01' + bytes(12) + struct.pack('<H', 183))
+        with self.assertRaisesRegex(ValueError, 'not an x86-64'):
+            validator.validate(self.trees, COMMIT)
+
+    def test_llvm_and_a_packaged_fex_bundle_are_rejected(self):
+        path = self.trees / '25.08/files/lib/libGLX_mesa.so.0'
+        path.write_bytes(path.read_bytes() + b'libLLVM.so.22.1')
+        with self.assertRaisesRegex(ValueError, 'links LLVM'):
+            validator.validate(self.trees, COMMIT)
+        path.write_bytes(path.read_bytes().replace(b'libLLVM.so.22.1', b''))
+        self.write(self.trees / '25.08/files/fex/FEX', b'')
+        with self.assertRaisesRegex(ValueError, 'FEX bundle'):
+            validator.validate(self.trees, COMMIT)
+        shutil.rmtree(self.trees / '25.08/files/fex')
+        self.write(self.trees / '25.08/files/GuestThunks/libVDSO-guest.so', b'')
+        with self.assertRaisesRegex(ValueError, 'guest vDSO thunk'):
+            validator.validate(self.trees, COMMIT)
+
+    def test_aarch64_runtime_is_rejected(self):
+        path = self.trees / '25.08/metadata'
+        path.write_text(path.read_text().replace('/x86_64/', '/aarch64/'))
+        with self.assertRaisesRegex(ValueError, 'identity or priority'):
+            validator.validate(self.trees, COMMIT)
 
 
 if __name__ == '__main__':
