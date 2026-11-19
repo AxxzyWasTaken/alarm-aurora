@@ -88,6 +88,30 @@ class ParityTests(unittest.TestCase):
         self.assertIn('install -Dm644 60-aurora-trackpad-palms.quirks '
                       '"$pkgdir/usr/share/libinput/60-aurora-trackpad-palms.quirks"', recipe)
 
+    def test_power_defaults_apply_on_every_apple_silicon_mac(self):
+        # Neither setting depends on the SoC: one unit, wanted by sysinit.target
+        # from the package, skipped by ConditionFirmware off Apple silicon.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        text = (directory / 'aurora-power-defaults.service').read_text()
+        unit = configparser.ConfigParser(interpolation=None, strict=False)
+        unit.optionxform = str
+        unit.read_string(text)
+        self.assertEqual(unit['Unit']['ConditionFirmware'], 'device-tree-compatible(apple,arm-platform)')
+        self.assertEqual(unit['Service']['Type'], 'oneshot')
+        self.assertNotIn('Install', unit)
+        # Same order as the Fedora and NixOS ports: aurora-power-modes takes its
+        # Balanced baseline from the values it finds at start.
+        self.assertEqual(unit['Unit']['Before'].split(),
+                         ['sysinit.target', 'aurora-power-modes.service', 'shutdown.target'])
+        self.assertEqual([l for l in text.splitlines() if l.startswith('ExecStart=')], [
+            "ExecStart=-/usr/bin/sh -c 'echo powersupersave > /sys/module/pcie_aspm/parameters/policy'",
+            'ExecStart=/usr/bin/sysctl -q -w kernel.sched_util_clamp_min_rt_default=0'])
+        recipe = (directory / 'PKGBUILD').read_text()
+        self.assertIn('install -Dm644 aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/aurora-power-defaults.service"', recipe)
+        self.assertIn('ln -s ../aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/sysinit.target.wants/aurora-power-defaults.service"', recipe)
+
     def test_reboot_watchdog_fits_the_apple_hardware_watchdog(self):
         # Same drop-in as Fedora's aurora-platform: the Apple SoC watchdog
         # (24 MHz, 32-bit) cannot time out later than about 178 s.
