@@ -19,8 +19,9 @@ class PinTests(unittest.TestCase):
         self.assertIn(pins['sha256'], text)
         self.assertRegex(text, r"(?m)^pkgname=\('speakerguardd-v2'\)$")
         # Sorts above every retired preview build (RC7 was 1.0.0alpha.1-25).
-        self.assertRegex(text, r"(?m)^pkgver=1\.0\.0alpha\.1$")
-        self.assertGreater(int(re.search(r"(?m)^pkgrel=(\d+)$", text).group(1)), 25)
+        self.assertRegex(text, r"(?m)^pkgver=1\.0\.0alpha\.2$")
+        self.assertRegex(text, r"(?m)^pkgrel=\d+$")
+        self.assertEqual(pins['version'], '1.0.0-alpha.2')
         self.assertNotRegex(text, r'(?m)^\s*(conflicts|replaces|provides)=')
         main = text.split('package_speakerguardd-v2() {', 1)[1].split('\n}', 1)[0]
         # The gate in every unit decides; the older daemons carry it the other way round.
@@ -41,7 +42,7 @@ class PinTests(unittest.TestCase):
         # only on a passing self-check; it replaces only the retired builds.
         audio = (ROOT / 'packages/aurora-audio/PKGBUILD').read_text()
         self.assertIn("'speakersafetyd' 'speakerguardd' 'alsa-utils-aurora'", audio)
-        self.assertIn("'speakerguardd-v2>=1.0.0alpha.1-43' 'aurora-speaker-upgrade>=0.1-0.17'", audio)
+        self.assertIn("'speakerguardd-v2>=1.0.0alpha.2-1' 'aurora-speaker-upgrade>=0.1-0.18'", audio)
         self.assertIn("conflicts=('asahi-audio' 'asahi-audio-aurora' 'speakerguardd-v2<=1.0.0alpha.1-25')", audio)
         self.assertIn("replaces=('asahi-audio-aurora' 'speakerguardd-v2<=1.0.0alpha.1-25')", audio)
         for pkg in (ROOT / 'packages').glob('*/PKGBUILD'):
