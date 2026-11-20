@@ -65,6 +65,10 @@ echo FEX-OVERLAY-UPGRADE-ROLLBACK-PASS
 # as today's guest is (#335), for Fedora's.
 systemctl stop aurora-fex-mesa.service
 pacman --config "$work/pacman.conf" -R --noconfirm mesa-aurora-fex-guest
+# This test restarts the provider more often than systemd's default start
+# limit allows (a real upgrade starts it once or twice).
+mkdir -p /run/systemd/system/aurora-fex-mesa.service.d
+printf '[Unit]\nStartLimitIntervalSec=0\n' > /run/systemd/system/aurora-fex-mesa.service.d/90-test-start-limit.conf
 systemctl daemon-reload
 stock=/usr/share/guestos/fex-mesa
 mkdir -p "$stock/usr/lib"
