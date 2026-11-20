@@ -1,5 +1,8 @@
 from pathlib import Path
+import hashlib
+import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -58,7 +61,7 @@ def touchid_files(etc, profile):
                         'plasmalogin': 'auth include system-login\n'}}
     for name, text in services.get(profile, {}).items():
         write(pam / name, text)
-    write(etc / 'systemd/logind.conf.d/50-aurora-sep.conf', LOGIND)
+    write(etc / 'systemd/logind.conf.d/05-aurora-sep.conf', LOGIND)
     if profile == 'kde':
         write(etc / 'xdg/powerdevilrc', POWERDEVIL)
 
@@ -309,11 +312,37 @@ class CheckBasicsTests(unittest.TestCase):
         self.assert_fails('minimal', mutate, 'polkit-1 does not offer a fingerprint')
 
     def test_power_key_that_powers_off_fails(self):
-        self.assert_fails('minimal', lambda root: (root / 'etc/systemd/logind.conf.d/50-aurora-sep.conf').unlink(),
-                          'logind HandlePowerKey=(default), not suspend')
+        self.assert_fails('minimal', lambda root: (root / 'etc/systemd/logind.conf.d/05-aurora-sep.conf').unlink(),
+                          'logind HandlePowerKey=(default), not suspend or ignore')
         self.fresh()
         self.assert_fails('gnome', lambda root: write(root / 'etc/systemd/logind.conf.d/90-local.conf',
-                          '[Login]\nHandlePowerKey=poweroff\n'), 'logind HandlePowerKey=poweroff, not suspend')
+                          '[Login]\nHandlePowerKey=poweroff\n'), 'logind HandlePowerKey=poweroff, not suspend or ignore')
+
+    def test_explicit_power_key_suspend_or_ignore_passes(self):
+        for profile in ('minimal', 'gnome', 'kde'):
+            for value in ('suspend', 'ignore'):
+                with self.subTest(profile=profile, value=value):
+                    self.fresh()
+                    root = self.desktop_root(profile)
+                    (root / 'etc/systemd/logind.conf.d/05-aurora-sep.conf').unlink()
+                    write(root / 'usr/lib/systemd/logind.conf.d/05-aurora-sep.conf',
+                          (ROOT / 'packages/aurora-sep/logind-aurora-sep.conf').read_text())
+                    write(root / 'etc/systemd/logind.conf.d/10-ignore-power-button.conf',
+                          f'[Login]\nHandlePowerKey={value}\n')
+                    result = self.check('--profile', profile, '--root', str(root))
+                    self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_empty_power_key_override_fails(self):
+        self.assert_fails('minimal', lambda root: write(root / 'etc/systemd/logind.conf.d/90-local.conf',
+                          '[Login]\nHandlePowerKey=\n'), 'logind HandlePowerKey=(default), not suspend or ignore')
+
+    def test_long_press_must_still_power_off(self):
+        for value in ('ignore', ''):
+            with self.subTest(value=value):
+                self.fresh()
+                self.assert_fails('minimal', lambda root: write(root / 'etc/systemd/logind.conf.d/90-local.conf',
+                                  f'[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress={value}\n'),
+                                  f'logind HandlePowerKeyLongPress={value or "(default)"}, not poweroff')
 
     def test_plasma_power_button_must_suspend(self):
         self.assert_fails('kde', lambda root: (root / 'etc/xdg/powerdevilrc').unlink(),
@@ -346,6 +375,74 @@ class CheckBasicsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         write(root / etc.lstrip('/') / 'locale.conf', 'LANG=C\n')
         self.assertNotEqual(self.check('--profile', 'gnome', '--root', str(root), '--system', system).returncode, 0)
+
+
+class PowerKeyPackageTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.source = self.base / 'source'
+        shutil.copytree(ROOT / 'packages/aurora-sep', self.source)
+        self.root = self.base / 'root'
+        # Exercise the actual package() destination without installing anything.
+        subprocess.run(['bash', '-euc', 'source ./PKGBUILD; package'], cwd=self.source,
+                       env={**os.environ, 'pkgdir': str(self.root)}, check=True, capture_output=True)
+
+    def test_package_installs_early_default(self):
+        dropins = self.root / 'usr/lib/systemd/logind.conf.d'
+        self.assertEqual([p.name for p in dropins.iterdir()], ['05-aurora-sep.conf'])
+        self.assertEqual((dropins / '05-aurora-sep.conf').read_bytes(),
+                         (self.source / 'logind-aurora-sep.conf').read_bytes())
+
+    def test_local_source_checksums(self):
+        result = subprocess.check_output(['bash', '-c',
+            'source ./PKGBUILD; for i in "${!source[@]}"; do '
+            'printf "%s %s\\n" "${source[$i]}" "${sha256sums[$i]}"; done'], cwd=self.source, text=True)
+        for line in result.splitlines():
+            name, digest = line.split()
+            with self.subTest(source=name):
+                self.assertEqual(hashlib.sha256((self.source / name).read_bytes()).hexdigest(), digest)
+
+    @unittest.skipUnless(shutil.which('systemd-analyze'), 'requires systemd-analyze')
+    def test_systemd_dropin_precedence(self):
+        spec = importlib.util.spec_from_file_location('check_basics', SCRIPT)
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        vendor = 'usr/lib/systemd/logind.conf.d/'
+        etc = 'etc/systemd/logind.conf.d/'
+        snippet = (self.source / 'logind-aurora-sep.conf').read_text()
+        ignore = '[Login]\nHandlePowerKey=ignore\n'
+        cases = [
+            ('old50-overrides-omarchy', {vendor + '50-aurora-sep.conf': snippet,
+                                       etc + '10-ignore-power-button.conf': ignore}, 'suspend'),
+            ('new05-respects-omarchy', {etc + '10-ignore-power-button.conf': ignore}, 'ignore'),
+            ('new05-alone', {}, 'suspend'),
+            ('later-admin-wins', {etc + '10-ignore-power-button.conf': ignore,
+                                 etc + '90-local.conf': LOGIND}, 'suspend'),
+            ('same-filename-etc-wins', {etc + '05-aurora-sep.conf': ignore +
+                                      'HandlePowerKeyLongPress=poweroff\n'}, 'ignore'),
+        ]
+        for name, files, expected in cases:
+            with self.subTest(case=name):
+                root = self.base / name
+                shutil.copytree(self.root, root)
+                # The old case has only the previous package destination.
+                if name.startswith('old50'):
+                    (root / vendor / '05-aurora-sep.conf').unlink(missing_ok=True)
+                for path, text in files.items():
+                    write(root / path, text)
+                result = subprocess.run(['systemd-analyze', '--root=' + str(root), 'cat-config',
+                                         'systemd/logind.conf'], capture_output=True, text=True, check=True)
+                values = dict(line.split('=', 1) for line in result.stdout.splitlines()
+                              if line.startswith(('HandlePowerKey=', 'HandlePowerKeyLongPress=')))
+                self.assertEqual(values['HandlePowerKey'], expected, result.stdout)
+                self.assertEqual(values['HandlePowerKeyLongPress'], 'poweroff', result.stdout)
+                texts = checker.logind_texts(checker.Root(root))
+                for key, value in values.items():
+                    self.assertEqual(checker.config_value(texts, '[Login]', key), value)
+                if name == 'same-filename-etc-wins':
+                    self.assertNotIn(str(root / vendor / '05-aurora-sep.conf'), result.stdout)
 
 
 if __name__ == '__main__':
