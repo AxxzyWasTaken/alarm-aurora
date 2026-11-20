@@ -242,6 +242,40 @@ class FexSteamTests(unittest.TestCase):
         self.assertIn('"$pkgdir/usr/lib/systemd/system/aurora-fex-mesa.service.d/50-aurora-fex-rootfs.conf"', text)
         subprocess.run(['sh', '-n', str(d / 'aurora-fex-provider-up')], check=True)
 
+    def test_fex_uses_the_aurora_mesa_provider_while_it_is_mounted(self):
+        d = ROOT / 'packages/fex-emu'
+        # pacman has no weak dependencies, and the guest pins mesa-aurora's
+        # build: Aurora's images carry it, fex-emu only suggests it.
+        self.assertNotIn('mesa-aurora-fex-guest', field('fex-emu', 'package_fex-emu', 'depends'))
+        self.assertIn('util-linux', field('fex-emu', 'package_fex-emu', 'depends'))
+        self.assertTrue([o for o in field('fex-emu', 'package_fex-emu', 'optdepends')
+                         if o.startswith('mesa-aurora-fex-guest: ')])
+        self.assertIn('mesa-aurora-fex-guest', (ROOT / 'scripts/build-image').read_text())
+        # FEX reads the runtime config over the global one, in the global layer only.
+        patch = '0003-Config-read-a-runtime-system-config-over-the-global-one.patch'
+        self.assertIn(patch, field('fex-emu', None, 'source'))
+        text = (d / 'PKGBUILD').read_text()
+        self.assertIn(f'patch -Np1 -i "$srcdir/{patch}"', text.split('\nprepare() {', 1)[1].split('\n}', 1)[0])
+        body = (d / patch).read_text()
+        self.assertIn('+  if (GetLayerType() == FEXCore::Config::LayerType::LAYER_GLOBAL_MAIN) {', body)
+        self.assertIn('+    const fextl::string RuntimeConfig {"/run/fex-emu/Config.json"};', body)
+        self.assertIn('grep -qaF /run/fex-emu/Config.json build/Bin/FEX', text.split('\ncheck() {', 1)[1].split('\n}', 1)[0])
+        package = text.split('\npackage_fex-emu() {', 1)[1].split('\n}', 1)[0]
+        self.assertIn('install -Dm755 aurora-fex-rootfs "$pkgdir/usr/lib/fex-emu/aurora-fex-rootfs"', package)
+        self.assertIn('install -Dm644 71-aurora-fex-rootfs.hook "$pkgdir/usr/share/libalpm/hooks/71-aurora-fex-rootfs.hook"',
+                      package)
+        dropin = (d / '50-aurora-fex-rootfs.conf').read_text()
+        for key in ('ExecStartPost', 'ExecStopPost'):
+            self.assertIn(f'\n{key}=-/usr/lib/fex-emu/aurora-fex-rootfs\n', dropin)
+        self.assertIn('\nBefore=systemd-user-sessions.service\n', dropin)
+        script = (d / 'aurora-fex-rootfs').read_text()
+        self.assertIn('provider=/usr/share/guestos/aurora-fex-mesa\n', script)
+        subprocess.run(['sh', '-n', str(d / 'aurora-fex-rootfs')], check=True)
+        self.assertIn('/usr/lib/fex-emu/aurora-fex-rootfs || :\n', (d / 'aurora-fex-provider-up').read_text())
+        # The installed global config still names the stock image.
+        self.assertEqual(json.loads((d / 'Config.json').read_text()),
+                         {'Config': {'RootFS': '/usr/share/fex-emu/RootFS/default.erofs'}})
+
     def test_gtk2_is_built_here_for_the_native_client(self):
         # Arch Linux ARM dropped GTK 2; steamui.so needs libgtk-x11-2.0.so.0.
         self.assertEqual(field('gtk2', None, 'arch'), ['aarch64'])
