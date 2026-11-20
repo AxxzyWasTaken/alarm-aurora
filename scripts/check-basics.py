@@ -473,17 +473,35 @@ def config_value(texts, section, key):
 
 
 def logind_texts(root):
-    files = [root.path(f'{root.etc}/systemd/logind.conf'), root.path('/usr/lib/systemd/logind.conf'),
-             root.path(f'{root.usr}/lib/systemd/logind.conf')]
+    # First main file only; drop-ins then override it in global filename order.
+    # Keep the NixOS closure mappings, with /usr/lib as a vendor fallback.
+    directories = tuple(dict.fromkeys((f'{root.etc}/systemd', '/run/systemd',
+                                       '/usr/local/lib/systemd', f'{root.usr}/lib/systemd',
+                                       '/usr/lib/systemd')))
+    texts = []
+    null = root.path('/dev/null')
+    for directory in directories:
+        name = f'{directory}/logind.conf'
+        if root.path(name) == null:
+            break  # A masked main also suppresses lower-priority main files.
+        text = root.text(name)
+        if text is not None:
+            texts.append(text)
+            break  # An empty main still replaces the whole vendor file.
     dropins = {}
-    for directory in ('/usr/lib/systemd/logind.conf.d', f'{root.usr}/lib/systemd/logind.conf.d',
-                      f'{root.etc}/systemd/logind.conf.d'):
-        path = root.path(directory)
+    for directory in reversed(directories):
+        path = root.path(f'{directory}/logind.conf.d')
         if path.is_dir():
             for item in path.glob('*.conf'):
-                dropins[item.name] = item
-    texts = [path.read_text(errors='replace') for path in dict.fromkeys(files) if path.is_file()]
-    return texts + [dropins[name].read_text(errors='replace') for name in sorted(dropins) if dropins[name].is_file()]
+                dropins[item.name] = f'{directory}/logind.conf.d/{item.name}'
+    for name in sorted(dropins):
+        # Resolve each selected link inside the image, including /dev/null masks.
+        if root.path(dropins[name]) == null:
+            continue
+        text = root.text(dropins[name])
+        if text is not None:
+            texts.append(text)
+    return texts
 
 
 def check_touchid(root, profile):
