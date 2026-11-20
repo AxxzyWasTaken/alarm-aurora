@@ -94,12 +94,15 @@ build() {
     -DOVERRIDE_VERSION="$_describe" -DOVERRIDE_HASH="$_commit" \
     -DROOTFS_PACKAGE=fex-emu-rootfs-arch
   cmake --build build
-  # The Steam compatibility tool, as a separate portable build.
+  # The Steam compatibility tool, as a separate portable build. Its bundled fmt
+  # builds as a C++ module by default with CMake 3.28+ and Ninja, which needs
+  # CMake's `import std`; that can't find GCC 16's std.cc.
   cmake -S "fex-$_commit" -B steam-build -G Ninja \
     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DUSE_LINKER=lld -DENABLE_CCACHE=OFF -DTUNE_CPU=none \
     -DBUILD_STEAM_SUPPORT=ON -DBUILD_THUNKS=OFF -DBUILD_TESTING=OFF -DBUILD_FEXCONFIG=OFF -DENABLE_OFFLINE_TELEMETRY=OFF \
-    -DOVERRIDE_VERSION="$_describe" -DOVERRIDE_HASH="$_commit"
+    -DOVERRIDE_VERSION="$_describe" -DOVERRIDE_HASH="$_commit" \
+    -DFMT_MODULE=OFF
   cmake --build steam-build
 }
 
