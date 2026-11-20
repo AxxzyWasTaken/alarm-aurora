@@ -163,3 +163,15 @@ The old manual inputs still work: `publish.yml -f build-run='<ids>' -f release-t
 - A tracker PR is left alone once anyone but the bot pushes to it.
 - `channels.json` on the `channels` branch is the record of what each channel serves; the deployed site
   carries a copy.
+
+## Edge
+
+Edge is the qualified channel for every M1, M2 and M3 Mac and the MacBook Neo ([aurora-distributions docs/edge-train.md](https://github.com/aurora-silicon/aurora-distributions/blob/main/docs/edge-train.md)). ALARM is rolling, so Edge is an overlay, not a frozen snapshot: `[aurora-edge]` (`https://aurorasilicon.org/alarm-aurora/edge/aarch64`) carries only the kernel and Mesa of the train's aurora-edge pair, and sits before `[aurora]` (Testing), so pacman takes those packages from it and everything else from Testing, which follows the Arch base. A third full copy would also not fit the Pages budget.
+
+| Step | How |
+|---|---|
+| Edge packages | `edge-staging/<pair>` branch changing only `sources.json` and the `linux-aurora`, `mesa-aurora`, `mesa-aurora-fex-guest` and `aurora-flatpak-gl` recipes (never merged), `packages.yml` dispatched on it |
+| Edge overlay | `publish-edge.yml -f build-run=<that run>`: checks the staging diff, the packaged aurora-edge pair and every package attestation; signs the packages and `aurora-edge.db` in `testing-signing` (`sign-repository.py --repository-name aurora-edge`); release `edge-YYYYMMDD.N` with `edge-sources.json` |
+| Images | `images.yml -f channel=edge -f release-tag=testing-… -f edge-snapshot=edge-…`: `[aurora-edge]` ahead of `[aurora]` while building and after sealing; `edge-image-proof.json` (schema 2) is attested and shipped |
+| Payloads | `publish-edge-payload.yml` per profile, after the train record is on aurora-distributions main |
+| Feed | `deploy-snapshot.yml -f channel=edge -f release-tag=edge-…`: serves only the overlay the adopted aurora-distributions Edge train names |

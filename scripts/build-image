@@ -9,7 +9,15 @@ profile=${1:?arch-kde, arch-gnome or arch-minimal required}
 tag=${2:?immutable signed Aurora testing snapshot required}
 # The update channel the installed system follows afterwards.
 channel=${3:-testing}
-[[ $profile =~ ^arch-(kde|gnome|minimal)$ && $tag =~ ^testing-[A-Za-z0-9._-]+$ && $channel =~ ^(testing|stable)$ ]]
+[[ $profile =~ ^arch-(kde|gnome|minimal)$ && $tag =~ ^testing-[A-Za-z0-9._-]+$ && $channel =~ ^(testing|stable|edge)$ ]]
+# An Edge image installs the [aurora-edge] overlay (AURORA_EDGE_SNAPSHOT, its
+# edge-sources.json in AURORA_EDGE_SOURCES) ahead of the Testing snapshot.
+edge_tag=${AURORA_EDGE_SNAPSHOT:-}
+if [[ $channel == edge ]]; then
+  [[ -n $edge_tag && -f ${AURORA_EDGE_SOURCES:?} ]]
+else
+  [[ -z $edge_tag ]]
+fi
 [[ $(id -u) == 0 && $(uname -m) == aarch64 ]]
 python3 "$root/scripts/fetch-base.py"
 output=$root/out/$profile
@@ -68,12 +76,13 @@ chroot "$mountroot" pacman-key --add /tmp/asahi-alarm.gpg
 chroot "$mountroot" pacman-key --lsign-key 12CE6799A94A3F1B5DDFFE88F576553597FB8FEB
 chroot "$mountroot" pacman-key --add /tmp/aurora-alarm.asc
 chroot "$mountroot" pacman-key --lsign-key "$(cat "$root/keys/fingerprint.txt")"
-python3 - "$mountroot/etc/pacman.conf" "$tag" <<'PY'
+python3 - "$root/scripts" "$mountroot/etc/pacman.conf" "$tag" "$edge_tag" <<'PY'
 from pathlib import Path
 import sys
-p=Path(sys.argv[1]);s=p.read_text();at=s.index('[core]')
-s=s[:at]+('[aurora]\nSigLevel = Required DatabaseRequired\nServer = https://github.com/aurora-silicon/alarm-aurora/releases/download/'+sys.argv[2]+'\n\n[asahi-alarm]\nServer = https://github.com/asahi-alarm/asahi-alarm/releases/download/$arch\n\n')+s[at:]
-p.write_text(s)
+sys.path.insert(0, sys.argv[1])
+import edgelib
+p=Path(sys.argv[2])
+p.write_text(edgelib.add_sections(p.read_text(), sys.argv[3], sys.argv[4] or None))
 PY
 packages=(base sudo bash python btrfs-progs cryptsetup networkmanager-aurora bluez bluez-utils wireless-regdb linux-firmware
   asahi-alarm-keyring aurora-keyring linux-aurora aurora-userpages aurora-boot aurora-firstboot aurora-sep libfprint-aurora aurora-firmware aura uboot-aurora
@@ -233,7 +242,18 @@ LC_ALL=C chroot "$mountroot" update-m1n1 /boot/efi/m1n1/boot.bin
 monitor_free=false
 if [[ -e $mountroot/usr/share/aura/monitor-free ]]; then monitor_free=true; fi
 # Initial assembly is pinned; subsequent installed-system updates use the signed rolling feed.
-sed -i "s@https://github.com/aurora-silicon/alarm-aurora/releases/download/$tag@https://aurorasilicon.org/alarm-aurora/$channel/aarch64@" "$mountroot/etc/pacman.conf"
+python3 - "$root/scripts" "$mountroot/etc/pacman.conf" "$tag" "$edge_tag" "$channel" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import edgelib
+p=Path(sys.argv[2])
+p.write_text(edgelib.seal(p.read_text(), sys.argv[3], sys.argv[4] or None, sys.argv[5]))
+PY
+if [[ -n $edge_tag ]]; then
+  python3 "$root/scripts/edge-image-proof.py" --root "$mountroot" --profile "$profile" --snapshot "$edge_tag" \
+    --edge-sources "$AURORA_EDGE_SOURCES" --output "$root/out/$profile-edge-image-proof.json"
+fi
 chroot "$mountroot" pacman -Scc --noconfirm
 rm -f "$mountroot/tmp/asahi-alarm.gpg" "$mountroot/tmp/aurora-alarm.asc"
 # The first boot must find nothing left to change. A unit the image keeps
@@ -283,5 +303,8 @@ fi
 # installer writes.
 python3 "$root/scripts/check-basics.py" --profile "${profile#arch-}" --esp "$root/out/$profile-installer/esp" \
   --boot-image "$root/out/$profile-installer/boot.img" --boot-uuid "$boot_uuid"
+if [[ -n $edge_tag ]]; then
+  cp "$root/out/$profile-edge-image-proof.json" "$root/out/$profile-installer/edge-image-proof.json"
+fi
 tar --sparse -C "$root/out/$profile-installer" -cf - . | zstd -T4 -3 -o "$root/out/$profile-filesystems.tar.zst"
 sha256sum "$root/out/$profile-filesystems.tar.zst" > "$root/out/$profile-filesystems.tar.zst.sha256"
