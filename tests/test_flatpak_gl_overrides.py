@@ -39,11 +39,16 @@ esac
 # Fail only the named operation, with the real helper supplying all paths and
 # control flow. A partial filter result must never replace the original.
 FAULT_TOOL = r'''
-import os, pathlib, sys
+import os, pathlib, subprocess, sys
 command = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 fault = os.environ.get('TEST_FAULT', '')
 target = os.environ['AURORA_FLATPAK_GL_OVERRIDES']
+if command == 'mktemp' and fault == 'open':
+    result = subprocess.run([REAL_TOOLS[command], *args], capture_output=True, text=True, check=True)
+    pathlib.Path(result.stdout.strip()).chmod(0o400)
+    print(result.stdout, end='')
+    sys.exit(0)
 fail = ((command == 'grep' and '-vxF' in args and fault == 'filter')
         or (command == 'grep' and '-qvE' in args and fault in ('inspect', 'inspect-and-cleanup'))
         or (command == 'mktemp' and fault == 'create')
@@ -137,6 +142,10 @@ class OverrideCleanupTests(unittest.TestCase):
 
     def test_temp_creation_failure_preserves_original_and_retries(self):
         self.check_fault('create')
+
+    @unittest.skipIf(os.geteuid() == 0, 'requires unprivileged filesystem permission checks')
+    def test_temp_open_failure_is_not_an_empty_filter_result(self):
+        self.check_fault('open')
 
     def test_metadata_failure_preserves_original_and_retries(self):
         self.check_fault('metadata')
