@@ -105,6 +105,22 @@ echo "${dev:-root}"
 }
 
 
+def read_config(path):
+    """The runtime config as JSON, None if absent, or what is wrong with it.
+    Never follows a link or reads without bound (the write-failure double
+    points the temporary file at /dev/full)."""
+    if path.is_symlink():
+        return ('symlink', os.readlink(path))
+    if not path.exists():
+        return None
+    with path.open('rb') as f:
+        data = f.read(65536)
+    try:
+        return json.loads(data)
+    except ValueError:
+        return ('invalid', data[:64])
+
+
 def write_doubles(directory, doubles):
     for name, text in doubles.items():
         path = Path(directory) / name
@@ -112,8 +128,14 @@ def write_doubles(directory, doubles):
         path.chmod(0o755)
 
 
-ELF64 = b'\x7fELF\x02\x01\x01\x00'
-ELF32 = b'\x7fELF\x01\x01\x01\x00'
+def elf(bits, machine):
+    """An ELF header up to e_machine: class, little-endian, ET_DYN."""
+    return b'\x7fELF' + bytes([bits // 32, 1, 1]) + bytes(9) + b'\x03\x00' + machine.to_bytes(2, 'little')
+
+
+ELF64 = elf(64, 62)          # x86-64
+ELF32 = elf(32, 3)           # i386
+AARCH64 = elf(64, 183)       # the host's own libraries
 FEDORA_TREE = {'.aurora-mesa-commit': b'', 'usr/lib64/ld-linux-x86-64.so.2': ELF64,
                'usr/lib64/libvulkan_asahi.so': ELF64, 'usr/lib/libvulkan_asahi.so': ELF32}
 
@@ -122,7 +144,7 @@ class FexRootfsTests(unittest.TestCase):
     """aurora-fex-rootfs points FEX's global RootFS at the provider only while
     it is a usable tree, through a bind that FEX's programs can keep busy."""
 
-    def run_select(self, mounts=(), files=FEDORA_TREE, config=False, mount_fails=False):
+    def run_select(self, mounts=(), files=FEDORA_TREE, config=False, mount_fails=False, write_fails=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -140,6 +162,9 @@ class FexRootfsTests(unittest.TestCase):
         bin_dir = root / 'bin'
         bin_dir.mkdir()
         write_doubles(bin_dir, MOUNT_DOUBLES)
+        if write_fails:
+            # /run is full: the temporary file takes no more data (/dev/full).
+            write_doubles(bin_dir, {'mktemp': '#!/bin/bash\np="${1%/*}/.Config.json.full"\nln -s /dev/full "$p" && echo "$p"\n'})
         script = (FEX / 'aurora-fex-rootfs').read_text()
         self.assertIn(f'provider={PROVIDER}\n', script)
         self.assertIn('dir=/run/fex-emu\n', script)
@@ -147,12 +172,12 @@ class FexRootfsTests(unittest.TestCase):
         script = script.replace('dir=/run/fex-emu\n', f'dir={run}\n')
         env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', TEST_ROOT=str(root),
                    MOUNT_FAILS='yes' if mount_fails else 'no')
-        result = subprocess.run(['sh', '-c', script], env=env)
+        result = subprocess.run(['sh', '-c', script], env=env, stderr=subprocess.PIPE, text=True)
+        self.stderr = result.stderr
         stack = [line.split() for line in (root / 'mounts').read_text().splitlines()]
         reverse = {v: k for k, v in names.items()}
         stack = [(reverse[p], d, b) for p, d, b in stack]
-        cfg = run / 'Config.json'
-        rootfs_config = json.loads(cfg.read_text()) if cfg.exists() else None
+        rootfs_config = read_config(run / 'Config.json')
         return result.returncode, stack, rootfs_config, (root / 'log').read_text(), str(run / 'rootfs'), run
 
     def assert_selected(self, rootfs_config, rootfs):
@@ -237,31 +262,60 @@ class FexRootfsTests(unittest.TestCase):
         status, _, cfg, _, _, _ = self.run_select(mounts=[('provider', 'ovl1', 0)], config=True, mount_fails=True)
         self.assertNotEqual(status, 0)
         self.assertIsNone(cfg)
+        self.assertIn('FEX keeps the stock RootFS', self.stderr)
+
+    def test_full_run_leaves_no_config(self):
+        # An empty or partial Config.json would stop every x86 program: FEX
+        # refuses to parse it. A failed write must leave none, old or new.
+        for config in (False, True):
+            with self.subTest(old_config=config):
+                status, _, cfg, _, _, run = self.run_select(mounts=[('provider', 'ovl1', 0)], config=config,
+                                                            write_fails=True)
+                self.assertNotEqual(status, 0)
+                self.assertIsNone(cfg)
+                self.assertEqual(sorted(p.name for p in run.iterdir()), ['rootfs'])
+                self.assertIn("can't write", self.stderr)
+                self.assertIn('FEX keeps the stock RootFS', self.stderr)
+
+    def test_host_architecture_driver_is_not_used(self):
+        # A 64-bit ELF for the host (aarch64), not x86-64, beside the loader.
+        tree = dict(FEDORA_TREE, **{'usr/lib64/libvulkan_asahi.so': AARCH64})
+        _, _, cfg, _, _, _ = self.run_select(mounts=[('provider', 'ovl1', 0)], files=tree)
+        self.assertIsNone(cfg)
 
 
 class FexProviderUpTests(unittest.TestCase):
     """aurora-fex-provider-up restarts an enabled provider and always lets the
     RootFS follow the provider's state."""
 
-    def run_up(self, systemd=True, enabled=True, lower_active=False):
+    def run_up(self, systemd=True, enabled=True, lower_active=False, provider_active=False, image=True,
+               lower_tree=True):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'log').touch()
             if systemd:
                 (root / 'system').mkdir()
-            for flag, name in ((enabled, 'enabled'), (lower_active, 'lower-active')):
+            for flag, name in ((enabled, 'enabled'), (lower_active, 'lower-active'),
+                               (provider_active, 'provider-active'), (image, 'default.erofs')):
                 if flag:
                     (root / name).touch()
+            (root / 'fex-mesa').mkdir()
+            if lower_tree:
+                (root / 'fex-mesa/usr').mkdir()
             write_doubles(root, {'systemctl': '''#!/bin/bash
 printf 'systemctl %s\\n' "$*" >> "$TEST_ROOT/log"
 case "$*" in
   *is-enabled*) test -e "$TEST_ROOT/enabled" ;;
-  *is-active*) test -e "$TEST_ROOT/lower-active" ;;
+  *is-active*.mount) test -e "$TEST_ROOT/lower-active" ;;
+  *is-active*.service) test -e "$TEST_ROOT/provider-active" ;;
   *) exit 0 ;;
 esac
 ''', 'rootfs': '#!/bin/bash\necho rootfs >> "$TEST_ROOT/log"\n'})
             script = (FEX / 'aurora-fex-provider-up').read_text()
-            script = script.replace('/run/systemd/system', str(root / 'system'))
+            for path, name in (('/run/systemd/system', 'system'), ('/usr/share/fex-emu/RootFS/default.erofs', 'default.erofs'),
+                               ('/usr/share/guestos/fex-mesa', 'fex-mesa')):
+                self.assertIn(path, script)
+                script = script.replace(path, str(root / name))
             self.assertIn('/usr/lib/fex-emu/aurora-fex-rootfs', script)
             script = script.replace('/usr/lib/fex-emu/aurora-fex-rootfs', str(root / 'rootfs'))
             env = dict(os.environ, PATH=f'{tmp}:{os.environ["PATH"]}', TEST_ROOT=tmp)
@@ -284,9 +338,24 @@ esac
         self.assertFalse([line for line in log if 'start' in line or 'stop' in line])
         self.assertEqual(log[-1], 'rootfs')
 
+    def test_provider_up_without_its_image_below_is_remounted(self):
+        # The guest's service started before fex-emu-rootfs-fedora's image was
+        # there: the overlay holds only Mesa. Once the image is in, remount.
+        log = self.run_up(provider_active=True, lower_tree=False)
+        stop = log.index('systemctl stop aurora-fex-mesa.service')
+        self.assertLess(stop, log.index('systemctl start aurora-fex-mesa.service'))
+        self.assertEqual(log[-1], 'rootfs')
+
+    def test_provider_is_left_up_over_a_tree_or_without_an_image(self):
+        # A provider tree put there by hand, or still no image to mount.
+        for kwargs in ({'lower_tree': True}, {'lower_tree': False, 'image': False}):
+            with self.subTest(**kwargs):
+                log = self.run_up(provider_active=True, **kwargs)
+                self.assertNotIn('systemctl stop aurora-fex-mesa.service', log)
+                self.assertEqual(log[-2:], ['systemctl start aurora-fex-mesa.service', 'rootfs'])
+
     def test_nothing_runs_without_systemd(self):
         self.assertEqual(self.run_up(systemd=False), [])
-
 
 
 class FexInstallTests(unittest.TestCase):

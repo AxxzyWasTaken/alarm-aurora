@@ -73,7 +73,7 @@ systemctl daemon-reload
 stock=/usr/share/guestos/fex-mesa
 mkdir -p "$stock/usr/lib"
 ln -s lib "$stock/usr/lib64"
-printf '\177ELF\002\001\001\000\nstock\n' > "$stock/usr/lib/ld-linux-x86-64.so.2"
+printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\003\000\076\000\nstock\n' > "$stock/usr/lib/ld-linux-x86-64.so.2"
 package() { # NAME VERSION ROOT [INSTALL]
   printf 'pkgname = %s\npkgver = %s\npkgdesc = disposable FEX RootFS fixture\narch = any\nsize = 1024\n' "$1" "$2" > "$3/.PKGINFO"
   local members=(.PKGINFO usr)
@@ -95,11 +95,11 @@ guest() { # VERSION LAYOUT
   mkdir -p "$root/usr/share/guestos/aurora-fex-mesa" "$root/usr/share/libalpm/hooks"
   case $2 in
   arch) mkdir -p "$layer/usr/lib" "$layer/usr/lib32"
-    printf '\177ELF\002\001\001\000\naurora %s\n' "$1" > "$layer/usr/lib/libvulkan_asahi.so"
-    printf '\177ELF\001\001\001\000\naurora %s\n' "$1" > "$layer/usr/lib32/libvulkan_asahi.so" ;;
+    printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\003\000\076\000\naurora %s\n' "$1" > "$layer/usr/lib/libvulkan_asahi.so"
+    printf '\177ELF\001\001\001\000\000\000\000\000\000\000\000\000\003\000\003\000\naurora %s\n' "$1" > "$layer/usr/lib32/libvulkan_asahi.so" ;;
   fedora) mkdir -p "$layer/usr/lib" "$layer/usr/lib64"
-    printf '\177ELF\002\001\001\000\naurora %s\n' "$1" > "$layer/usr/lib64/libvulkan_asahi.so"
-    printf '\177ELF\001\001\001\000\naurora %s\n' "$1" > "$layer/usr/lib/libvulkan_asahi.so" ;;
+    printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\003\000\076\000\naurora %s\n' "$1" > "$layer/usr/lib64/libvulkan_asahi.so"
+    printf '\177ELF\001\001\001\000\000\000\000\000\000\000\000\000\003\000\003\000\naurora %s\n' "$1" > "$layer/usr/lib/libvulkan_asahi.so" ;;
   esac
   echo "$1" > "$layer/.aurora-mesa-commit"
   install -Dm644 /src/packages/mesa-aurora-fex-guest/aurora-fex-mesa.service "$root/usr/lib/systemd/system/aurora-fex-mesa.service"
@@ -154,6 +154,17 @@ selected 2-2
 systemctl stop aurora-fex-mesa.service
 stock_rootfs
 refute mountpoint -q "$rootfs"
+# A full /run: no runtime config at all (FEX refuses an empty or partial
+# one), and a journal line saying why.
+mount -t tmpfs -o size=4k fex-full /run/fex-emu
+dd if=/dev/zero of=/run/fex-emu/fill bs=1k count=64 2>/dev/null || :
+systemctl start aurora-fex-mesa.service
+systemctl is-active aurora-fex-mesa.service
+stock_rootfs
+[[ -z $(find /run/fex-emu -name '.Config.json.*') ]]
+journalctl -b -u aurora-fex-mesa.service | grep -F "can't write"
+systemctl stop aurora-fex-mesa.service
+umount /run/fex-emu
 systemctl start aurora-fex-mesa.service
 selected 2-2
 # Removing the guest, then fex-emu, falls back cleanly.
