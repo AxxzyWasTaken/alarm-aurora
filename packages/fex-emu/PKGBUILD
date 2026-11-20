@@ -94,15 +94,18 @@ build() {
     -DOVERRIDE_VERSION="$_describe" -DOVERRIDE_HASH="$_commit" \
     -DROOTFS_PACKAGE=fex-emu-rootfs-arch
   cmake --build build
-  # The Steam compatibility tool, as a separate portable build. Its bundled fmt
-  # builds as a C++ module by default with CMake 3.28+ and Ninja, which needs
-  # CMake's `import std`; that can't find GCC 16's std.cc.
+  # The Steam compatibility tool, as a separate portable build. It builds the
+  # bundled fmt, whose directory asks for CMake 3.28 policies: C++20 module
+  # scanning is on there, and CMake 4.5 then offers `import std`. It finds
+  # libstdc++.modules.json through clang as /lib/..., resolves its relative
+  # path to /include/c++/16.1.1/bits/std.cc (Arch's /lib is a link to
+  # usr/lib) and fails to generate. Nothing here uses modules.
   cmake -S "fex-$_commit" -B steam-build -G Ninja \
     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DUSE_LINKER=lld -DENABLE_CCACHE=OFF -DTUNE_CPU=none \
     -DBUILD_STEAM_SUPPORT=ON -DBUILD_THUNKS=OFF -DBUILD_TESTING=OFF -DBUILD_FEXCONFIG=OFF -DENABLE_OFFLINE_TELEMETRY=OFF \
     -DOVERRIDE_VERSION="$_describe" -DOVERRIDE_HASH="$_commit" \
-    -DFMT_MODULE=OFF
+    -DFMT_MODULE=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
   cmake --build steam-build
 }
 
