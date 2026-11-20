@@ -187,7 +187,8 @@ class LogindConfigTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
         root = fixture.desktop_root('minimal')
-        (root / 'etc/systemd/logind.conf.d/50-aurora-sep.conf').unlink()
+        # Exercise main selection independently of the fixture's package drop-ins.
+        shutil.rmtree(root / 'etc/systemd/logind.conf.d')
         # Both a false rejection and a false acceptance with the old reader.
         for local_key, vendor_key, expected_exit in (('suspend', 'poweroff', 0),
                                                      ('poweroff', 'suspend', 1)):
