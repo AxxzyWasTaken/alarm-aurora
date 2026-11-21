@@ -13,10 +13,9 @@ backup=('etc/UPower/UPower.conf')
 depends=('dbus' 'glib2' 'glibc' 'libgcc' 'libgudev' 'libimobiledevice' 'libplist' 'polkit')
 makedepends=('meson' 'ninja' 'glib2-devel' 'gobject-introspection' 'systemd')
 checkdepends=('python-dbusmock' 'python-gobject' 'python-packaging' 'umockdev')
-# Derived from fedora-aurora's upower-charge-limit-migrate; ALARM also reloads
-# udev on a same-boot custom-limit retry when the rule already matches.
-# The service is unchanged. Fedora needs a separate follow-up for this fix.
-# It hands the old helper's saved limit to UPower before upowerd starts.
+# upower-charge-limit-migrate is fedora-aurora's byte for byte: it hands a
+# charge limit saved by the old macsmc-battery units to UPower once, before
+# upowerd starts, so UPower is the only writer of the limit.
 source=("upower-$_commit.tar.gz::https://codeload.github.com/aurora-silicon/upower/tar.gz/$_commit"
         upower-charge-limit-migrate
         upower-charge-limit-migrate.service)

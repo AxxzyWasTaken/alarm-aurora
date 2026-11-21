@@ -13,10 +13,11 @@ SCRIPT = PACKAGE / 'upower-charge-limit-migrate'
 LEGACY = 'etc/udev/macsmc-battery.conf'
 STATUS = 'var/lib/upower/charging-threshold-status'
 RULE = 'etc/udev/rules.d/61-upower-charge-limit.rules'
-# Script derived from fedora-aurora blob fd1ab917e60ec7e297eac222e9197246415f08a2;
-# ALARM's custom-limit retry adaptation intentionally differs. Only the service
-# remains byte-identical to Fedora's packages/upower-aurora source.
-FEDORA_SERVICE_BLOB = '74f8054cacc84dca1e9cf28cb69e4990d3247ff0'
+# fedora-aurora packages/upower-aurora: the same files on both distributions.
+FEDORA_BLOBS = {
+    'upower-charge-limit-migrate': '78182d4231d490c82cf535d35034013589a1ee68',
+    'upower-charge-limit-migrate.service': '74f8054cacc84dca1e9cf28cb69e4990d3247ff0',
+}
 
 
 class MigrationTests(unittest.TestCase):
@@ -257,9 +258,11 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('ln -s ../upower-charge-limit-migrate.service "$pkgdir/usr/lib/systemd/system/upower.service.wants/"',
                       recipe)
 
-    def test_service_is_fedoras_byte_for_byte(self):
-        data = (PACKAGE / 'upower-charge-limit-migrate.service').read_bytes()
-        self.assertEqual(hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest(), FEDORA_SERVICE_BLOB)
+    def test_the_migration_is_fedoras_byte_for_byte(self):
+        for name, blob in FEDORA_BLOBS.items():
+            with self.subTest(name):
+                data = (PACKAGE / name).read_bytes()
+                self.assertEqual(hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest(), blob)
 
     def test_asahi_scripts_does_not_install_the_old_helper(self):
         recipe = (ROOT / 'packages/asahi-scripts/PKGBUILD').read_text()
