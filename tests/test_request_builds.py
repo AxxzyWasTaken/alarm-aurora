@@ -44,23 +44,24 @@ class RequestBuildsTests(unittest.TestCase):
         self.git('-c', 'user.name=t', '-c', 'user.email=t@example.org', 'commit', '-qm', 'step')
         return self.git('rev-parse', 'HEAD')
 
-    def add_run(self, run_id, status='completed', conclusion='failure', sha=None, jobs=(), event='push'):
+    def add_run(self, run_id, status='completed', conclusion='failure', sha=None, jobs=(), event='push', attempt=1):
         """A packages.yml run with `jobs` given as (name, conclusion or None) pairs; newest last."""
         record = {'id': run_id, 'head_sha': sha or self.head, 'head_branch': 'main', 'event': event,
                   'path': '.github/workflows/packages.yml', 'head_repository': {'full_name': REPOSITORY},
                   'created_at': f'2026-11-21T00:{run_id:02d}:00Z', 'status': status,
-                  'conclusion': conclusion if status == 'completed' else None}
+                  'conclusion': conclusion if status == 'completed' else None, 'run_attempt': attempt}
         self.runs.insert(0, record)
         self.jobs[run_id] = [{'name': name, 'status': 'completed' if result else 'in_progress',
                               'conclusion': result, 'html_url': f'https://example.org/job/{run_id}/{name}'}
                              for name, result in jobs]
         return record
 
-    def decide(self, missing=MISSING):
-        return module.decide(self.root, REPOSITORY, missing, self.runs, lambda run_id: self.jobs[run_id])
+    def decide(self, missing=MISSING, **limits):
+        return module.decide(self.root, REPOSITORY, missing, self.runs, lambda run_id: self.jobs[run_id], **limits)
 
     def main(self):
-        """Run the script as publish.yml does; return (dispatched package lists, output, exit status)."""
+        """Run the script as publish.yml does; return (dispatched package lists, output, exit status).
+        Re-run requests are kept in self.reruns."""
         plan = self.root / 'build-plan.json'
         plan.write_text(json.dumps({'action': 'missing', 'missing': MISSING}))
         dispatched = []
@@ -70,7 +71,13 @@ class RequestBuildsTests(unittest.TestCase):
                 return [{'jobs': self.jobs[int(route.split('/')[-2])]}]
             return {'workflow_runs': list(self.runs)}
 
+        self.reruns = []
+
         def gh(*args):
+            if args[:2] == ('run', 'rerun'):
+                self.assertEqual(args[3:], ('--repo', REPOSITORY, '--failed'))
+                self.reruns.append(int(args[2]))
+                return
             self.assertEqual(args[:6], ('workflow', 'run', 'packages.yml', '--repo', REPOSITORY, '--ref'))
             dispatched.append(args[-1].removeprefix('packages=').split())
 
@@ -132,10 +139,30 @@ class RequestBuildsTests(unittest.TestCase):
         self.assertEqual(decision['covered'], {})
         self.assertIn('alarm-aura', decision['fresh'])
 
-    def test_a_recipe_that_failed_once_is_retried_apart_from_the_others(self):
+    def test_a_run_that_failed_in_one_build_has_only_that_job_re_run(self):
+        # One mirror timeout must not cost a full rebuild of the run's other recipes.
         self.add_run(1, jobs=[('metadata', 'success'), ('build (aura)', 'success'), ('build (mesa-aurora)', 'failure'),
-                          ('build (linux-aurora)', 'success')])
+                              ('build (linux-aurora)', 'success')])
         dispatched, output, status = self.main()
+        self.assertEqual(dispatched, [])
+        self.assertEqual(self.reruns, [1])
+        self.assertIn('Re-running the failed jobs of [run 1]', output)
+        self.assertIn('(attempt 2) so its builds count: aura linux-aurora mesa-aurora', output)
+        self.assertEqual(status, 0)
+        # While the re-run attempt runs, the next publication leaves it alone.
+        self.runs[0].update(status='queued', conclusion=None, run_attempt=2)
+        self.jobs[1][2].update(status='queued', conclusion=None)
+        again, _, _ = self.main()
+        self.assertEqual((again, self.reruns), ([], []))
+
+    def test_a_recipe_that_failed_once_is_retried_apart_from_the_others(self):
+        # Once the run's re-run attempts are spent, its good builds are requested again apart
+        # from the recipe that failed.
+        self.add_run(1, attempt=module.MAX_ATTEMPTS,
+                     jobs=[('metadata', 'success'), ('build (aura)', 'success'), ('build (mesa-aurora)', 'failure'),
+                           ('build (linux-aurora)', 'success')])
+        dispatched, output, status = self.main()
+        self.assertEqual(self.reruns, [])
         self.assertEqual(dispatched, [['aura', 'linux-aurora'], ['mesa-aurora']])
         self.assertIn('Requested again on main, in a run of their own: mesa-aurora', output)
         self.assertIn('mesa-aurora: its last build of this recipe failed ([run 1](https://example.org/job/1/', output)
@@ -148,6 +175,7 @@ class RequestBuildsTests(unittest.TestCase):
                                    ('build (mesa-aurora)', 'success'), ('build (linux-aurora)', 'failure')])
         dispatched, output, status = self.main()
         self.assertEqual(dispatched, [['aura', 'mesa-aurora']])
+        self.assertEqual(self.reruns, [])  # a recipe out of retries is not re-run either
         self.assertIn('**linux-aurora is not requested again**: its build of this recipe failed 2 times in a row', output)
         self.assertIn('::error::linux-aurora failed to build 2 times in a row', output)
         self.assertEqual(status, 1)
@@ -156,9 +184,12 @@ class RequestBuildsTests(unittest.TestCase):
         self.add_run(1, jobs=[('metadata', 'success'), ('build (linux-aurora)', 'failure')])
         self.add_run(2, jobs=[('metadata', 'success'), ('build (linux-aurora)', 'success'), ('build (aura)', 'failure')])
         self.add_run(3, jobs=[('metadata', 'success'), ('build (linux-aurora)', 'failure')])
-        decision = self.decide()
+        decision = self.decide(max_attempts=1)
         self.assertEqual(decision['retry'], ['alarm-aura', 'alarm-linux-aurora'])
         self.assertEqual(decision['exhausted'], [])
+        # With attempts left, each failed run that holds a recipe's newest build is re-run instead.
+        reruns = {item['run']['id']: item['recipes'] for item in self.decide()['reruns']}
+        self.assertEqual(reruns, {3: ['alarm-linux-aurora'], 2: ['alarm-aura']})
 
     def test_a_fixed_recipe_starts_with_no_failures(self):
         for run_id in (1, 2):

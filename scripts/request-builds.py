@@ -15,6 +15,10 @@ publish.yml's plan names every recipe that has no publishable build
     MAX_FAILURES such failures in a row it is not requested again; it is named
     with its failed jobs and the step fails, because only a change (or a
     deliberate re-run) can fix it.
+  - A run that failed only in builds of today's recipes, each of them still
+    under MAX_FAILURES, has just its failed jobs re-run (up to MAX_ATTEMPTS
+    attempts) when it holds the newest build of the recipes it would supply:
+    once they pass, the run concludes success and all its builds count.
   - Every other recipe is requested in one run.
   - After MAX_FAILURES runs in a row failed outside the package builds (the
     metadata checks, the overlay or Touch ID upgrade tests), nothing is
@@ -45,6 +49,7 @@ _spec.loader.exec_module(resolve)
 
 WORKFLOW = 'packages.yml'
 MAX_FAILURES = 2
+MAX_ATTEMPTS = 3
 FAILED = {'failure', 'timed_out', 'startup_failure'}
 BUILD_JOB = re.compile(r'build \((.+)\)')
 
@@ -64,13 +69,15 @@ def planned(jobs):
     return any(job.get('name') == 'build' or BUILD_JOB.fullmatch(job.get('name', '')) for job in jobs)
 
 
-def decide(root, repository, missing, runs, jobs_for, max_failures=MAX_FAILURES):
+def decide(root, repository, missing, runs, jobs_for, max_failures=MAX_FAILURES, max_attempts=MAX_ATTEMPTS):
     """What to do for each missing recipe, from runs newest first."""
     missing = list(missing)
     covered, waiting, failures, settled = {}, [], {name: [] for name in missing}, set()
     broken, works = [], False  # runs that failed outside the builds; a newer run that did not
+    history, newest = [], {}  # failed runs, and the newest of them that built each recipe
     for run in runs:
-        inputs = same_inputs(root, run, repository) & set(missing)
+        current = same_inputs(root, run, repository)
+        inputs = current & set(missing)
         if not inputs:
             continue
         if run.get('status') == 'completed' and run.get('conclusion') == 'success':
@@ -93,17 +100,38 @@ def decide(root, repository, missing, runs, jobs_for, max_failures=MAX_FAILURES)
             broken.append({'run': run, 'jobs': outside})
         elif any(job.get('conclusion') in FAILED | {'success'} for job in built.values()):
             works = True
+        history.append({'run': run, 'current': current, 'built': built, 'outside': outside})
         for name in sorted(inputs & built.keys()):
             if name in covered or name in settled:
                 continue
+            newest.setdefault(name, run['id'])
             conclusion = built[name].get('conclusion')
             if conclusion in FAILED:
                 failures[name].append({**built[name], 'run': run})
             elif conclusion == 'success':
                 settled.add(name)
+    # Re-running only a run's failed jobs makes every other build of it count. That
+    # needs each failed job to be a build of today's recipe that may still be retried,
+    # and the run to hold the newest build of the recipes it would supply.
+    reruns = []
+    for item in history:
+        run, built = item['run'], item['built']
+        failed = {name for name, job in built.items() if job.get('conclusion') in FAILED}
+        supplies = [name for name in missing if name not in covered and newest.get(name) == run['id']]
+        if (run.get('status') != 'completed' or run.get('conclusion') != 'failure' or item['outside']
+                or run.get('run_attempt', 1) >= max_attempts or not failed or not failed <= item['current']
+                or any(len(failures.get(name, ())) >= max_failures for name in failed)
+                or not (failed & set(missing)) <= set(supplies) or not supplies):
+            continue
+        reruns.append({'run': run, 'recipes': supplies})
+        for name in supplies:
+            covered[name] = run
+    rerun_ids = {item['run']['id'] for item in reruns}
     left = [name for name in missing if name not in covered]
     return {
-        'covered': {name: covered[name] for name in missing if name in covered},
+        'covered': {name: covered[name] for name in missing
+                    if name in covered and covered[name]['id'] not in rerun_ids},
+        'reruns': reruns,
         'waiting': waiting,
         'fresh': [name for name in left if not failures[name]],
         'retry': [name for name in left if 0 < len(failures[name]) < max_failures],
@@ -121,6 +149,11 @@ def report(decision, repository, requested):
         by_run.setdefault(run['id'], []).append(name.removeprefix('alarm-'))
     for run_id, names in by_run.items():
         lines.append(f'- Building in [run {run_id}]({url}/{run_id}): {" ".join(names)}')
+    for item in decision['reruns']:
+        run = item['run']
+        lines.append(f'- Re-running the failed jobs of [run {run["id"]}]({url}/{run["id"]}) '
+                     f'(attempt {run.get("run_attempt", 1) + 1}) so its builds count: '
+                     f'{" ".join(name.removeprefix("alarm-") for name in item["recipes"])}')
     for run in decision['waiting']:
         lines.append(f'- [Run {run["id"]}]({url}/{run["id"]}) has not planned its builds yet; '
                      'nothing is requested until it has.')
@@ -174,8 +207,13 @@ def main():
         return [job for page in pages for job in page['jobs']]
 
     decision = decide(ROOT, args.repository, plan['missing'], runs, jobs_for)
+    if decision['waiting'] or decision['broken']:
+        decision['reruns'] = []
     requested = []
     if not decision['waiting'] and not decision['broken']:
+        for item in decision['reruns']:
+            if not args.dry_run:
+                lib.gh('run', 'rerun', str(item['run']['id']), '--repo', args.repository, '--failed')
         if decision['fresh']:
             request(args.repository, decision['fresh'], args.dry_run)
             requested.append(('Requested on main', decision['fresh']))

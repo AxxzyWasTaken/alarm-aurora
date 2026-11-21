@@ -161,8 +161,10 @@ The old manual inputs still work: `publish.yml -f build-run='<ids>' -f release-t
   build-system key makes every earlier build ineligible. The next publication then requests a full main
   build before it can complete.
 - A publication that is missing builds requests only the recipes no active build makes from today's
-  recipe (`scripts/request-builds.py`), and requests nothing while a build has not planned yet. A recipe
-  whose last build failed is requested in a run of its own; after two failures in a row it is named in the
+  recipe (`scripts/request-builds.py`), and requests nothing while a build has not planned yet. A run that
+  failed only in builds of today's recipes has just its failed jobs re-run (up to three attempts), so its
+  other builds count. Otherwise a recipe whose last build failed is requested in a run of its own; after
+  two failures in a row it is named in the
   run summary with its failed jobs, the publication run fails, and it is not requested again until its
   recipe changes or those jobs are re-run.
 - A tracker PR is left alone once anyone but the bot pushes to it.
