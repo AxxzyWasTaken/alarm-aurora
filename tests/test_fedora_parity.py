@@ -88,6 +88,20 @@ class ParityTests(unittest.TestCase):
         self.assertIn('install -Dm644 60-aurora-trackpad-palms.quirks '
                       '"$pkgdir/usr/share/libinput/60-aurora-trackpad-palms.quirks"', recipe)
 
+    def test_mission_control_key_opens_the_overview(self):
+        # Same default as Fedora's aurora-platform-core: F3 (KEY_SCALE,
+        # XF86LaunchA) shows every open window, as Mission Control does.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        override = configparser.ConfigParser(interpolation=None)
+        override.optionxform = str
+        override.read_string((directory / '60_aurora-apple-keys.gschema.override').read_text())
+        self.assertEqual(override.sections(), ['org.gnome.shell.keybindings'])
+        self.assertEqual(dict(override['org.gnome.shell.keybindings']),
+                         {'toggle-overview': "['XF86LaunchA']"})
+        pkgbuild = (directory / 'PKGBUILD').read_text()
+        self.assertIn('"$pkgdir/usr/share/glib-2.0/schemas/60_aurora-apple-keys.gschema.override"',
+                      pkgbuild)
+
     def test_power_defaults_apply_on_every_apple_silicon_mac(self):
         # Neither setting depends on the SoC: one unit, wanted by sysinit.target
         # from the package, skipped by ConditionFirmware off Apple silicon.
