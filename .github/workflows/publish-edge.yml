@@ -82,6 +82,10 @@ jobs:
                 '{linux: $linux, mesa: $mesa}' > edge-trees.json
           for package in linux-aurora mesa-aurora mesa-aurora-fex-guest aurora-flatpak-gl; do
             gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" -n "alarm-$package" -D "downloaded/$package"
+            # The recipe's split packages, read as text, must all be in the overlay.
+            mkdir -p "recipes/$package"
+            gh api "repos/$GITHUB_REPOSITORY/contents/packages/$package/PKGBUILD?ref=$head" \
+              -H 'Accept: application/vnd.github.raw+json' > "recipes/$package/PKGBUILD"
           done
           find downloaded -name '*.pkg.tar.*' ! -name '*.sig' -print0 |
             while IFS= read -r -d '' file; do
@@ -97,7 +101,7 @@ jobs:
           set -euo pipefail
           docker run --rm -e BUILD_RUN -v "$PWD:/src" -w /src "$SIGNER_IMAGE" bash -euo pipefail -c '
             dnf install -y bsdtar python3
-            python3 scripts/edge-overlay.py --packages downloaded --sources edge-build-sources.json \
+            python3 scripts/edge-overlay.py --packages downloaded --sources edge-build-sources.json --recipes recipes \
               --trees edge-trees.json --build-run "$BUILD_RUN" --output candidate/input-packages \
               --record candidate/edge-sources.json
           '

@@ -160,3 +160,81 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+closure = module('edge_closure', 'scripts/check-edge-closure.py')
+
+
+def package(name, version, depends=(), conflicts=(), provides=()):
+    return {'name': name, 'version': version, 'depends': list(depends), 'conflicts': list(conflicts),
+            'provides': list(provides)}
+
+
+class ClosureTests(unittest.TestCase):
+    """[aurora-edge] must resolve against the served [aurora] Testing feed it is installed with."""
+
+    def setUp(self):
+        self.overlay = [package('linux-aurora', '7.3.0.aurora1-43', depends=('avd-fw>=0.1.aurora3', 'kmod')),
+                        package('mesa-aurora', '1:26.3.0-35', provides=('mesa=26.3.0',))]
+        self.testing = [package('linux-aurora', '7.3.0.aurora1-41'), package('avd-fw', '0.1.aurora3-1'),
+                        package('aurora-boot', '20261018-20', depends=('linux-aurora>=7.3.0.aurora1-37',)),
+                        package('mesa-aurora', '1:26.3.0-30')]
+
+    def test_a_consistent_overlay_passes(self):
+        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+
+    def test_an_overlay_depend_testing_does_not_meet_is_refused(self):
+        self.overlay[0]['depends'] = ['avd-fw>=0.1.aurora4']
+        found = closure.problems(self.overlay, self.testing)
+        self.assertTrue(found and 'avd-fw>=0.1.aurora4' in found[0], found)
+
+    def test_a_testing_floor_above_the_edge_kernel_is_refused(self):
+        self.testing[2]['depends'] = ['linux-aurora>=7.3.0.aurora1-44']
+        found = closure.problems(self.overlay, self.testing)
+        self.assertTrue(found and 'aurora-boot' in found[0] and 'Testing copy' in found[0], found)
+
+    def test_a_testing_conflict_with_the_edge_kernel_is_refused(self):
+        self.testing.append(package('aurora-sep', '0.3-1', conflicts=('linux-aurora<7.3.0.aurora1-44',)))
+        found = closure.problems(self.overlay, self.testing)
+        self.assertTrue(found and 'aurora-sep' in found[0], found)
+
+    def test_an_overlay_provide_satisfies_testing(self):
+        self.testing.append(package('mesa-demos', '9.0-1', depends=('mesa>=26.3',)))
+        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+        self.testing[-1]['depends'] = ['mesa>=27']
+        self.assertTrue(closure.problems(self.overlay, self.testing))
+
+    def test_upstream_names_are_out_of_scope(self):
+        # kmod comes from [core]: neither Aurora feed carries it.
+        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+
+    def test_the_deploy_runs_the_check_whenever_both_feeds_are_served(self):
+        text = (ROOT / 'scripts/channel-site.py').read_text()
+        self.assertIn("if target.get('edge') and target.get('testing'):", text)
+        self.assertIn('check-edge-closure.py', text)
+
+
+class SplitPackageTests(unittest.TestCase):
+    def test_pkgname_is_read_without_running_the_recipe(self):
+        self.assertEqual(edgelib.pkgnames((ROOT / 'packages/linux-aurora/PKGBUILD').read_text()),
+                         ['linux-aurora', 'linux-aurora-headers', 'aurora-userpages'])
+        self.assertEqual(edgelib.pkgnames((ROOT / 'packages/mesa-aurora/PKGBUILD').read_text()),
+                         ['mesa-aurora', 'vulkan-aurora', 'opencl-rusticl-aurora', 'vulkan-lavapipe-aurora'])
+        self.assertEqual(edgelib.pkgnames('pkgname=aurora-flatpak-gl\n'), ['aurora-flatpak-gl'])
+        with self.assertRaisesRegex(ValueError, 'pkgname'):
+            edgelib.pkgnames('pkgname=("$other")\n')
+
+    def test_every_split_package_must_be_in_the_overlay(self):
+        expected = ['linux-aurora', 'linux-aurora-headers', 'aurora-userpages']
+        edgelib.check_complete(['aurora-userpages', 'linux-aurora', 'linux-aurora-headers'], expected)
+        with self.assertRaisesRegex(ValueError, 'linux-aurora-headers'):
+            edgelib.check_complete(['linux-aurora', 'aurora-userpages'], expected)
+        with self.assertRaisesRegex(ValueError, 'extra'):
+            edgelib.check_complete(expected + ['linux-aurora-docs'], expected)
+
+
+class EdgeDocsTests(unittest.TestCase):
+    def test_docs_state_what_alarm_edge_qualifies_and_how_to_roll_back(self):
+        text = (ROOT / 'docs/updates.md').read_text()
+        self.assertIn('qualifies only the kernel and Mesa', text)
+        self.assertIn('epoch', text)

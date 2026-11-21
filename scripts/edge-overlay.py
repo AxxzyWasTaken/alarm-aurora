@@ -28,6 +28,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', type=Path, required=True, help='downloaded, attested package artifacts')
     parser.add_argument('--sources', type=Path, required=True, help='sources.json of the edge-staging head')
+    parser.add_argument('--recipes', type=Path, required=True,
+                        help='<recipe>/PKGBUILD of the four Edge recipes at the edge-staging head')
     parser.add_argument('--trees', type=Path, required=True)
     parser.add_argument('--build-run', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -38,6 +40,9 @@ def main():
     files = sorted(path for path in args.packages.rglob('*.pkg.tar.*') if not path.name.endswith('.sig'))
     rows = {path: pkginfo(path) for path in files}
     names = edgelib.select(list(rows.values()))
+    expected = [name for bases in edgelib.FAMILIES.values() for base in bases
+                for name in edgelib.pkgnames((args.recipes / base / 'PKGBUILD').read_text())]
+    edgelib.check_complete(names, expected)
     args.output.mkdir(parents=True)
     for path in files:
         shutil.copyfile(path, args.output / path.name)

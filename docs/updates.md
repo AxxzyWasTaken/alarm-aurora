@@ -175,3 +175,9 @@ Edge is offered to the Macs whose chip family the adopted Edge train's rows qual
 | Images | `images.yml -f channel=edge -f release-tag=testing-… -f edge-snapshot=edge-…`: `[aurora-edge]` ahead of `[aurora]` while building and after sealing; `edge-image-proof.json` (schema 2) is attested and shipped |
 | Payloads | `publish-edge-payload.yml` per profile, after the train record is on aurora-distributions main |
 | Feed | `deploy-snapshot.yml -f channel=edge -f release-tag=edge-…`: serves only the overlay the adopted aurora-distributions Edge train names |
+
+**What ALARM Edge qualifies.** ALARM Edge qualifies only the kernel and Mesa: `[aurora-edge]` carries `linux-aurora`, `linux-aurora-headers`, `aurora-userpages`, the four `mesa-aurora` split packages, `mesa-aurora-fex-guest` and `aurora-flatpak-gl` (every split package their recipes declare; `publish-edge.yml` refuses an overlay missing one). The boot chain (`aura`, `uboot-aurora`, `aurora-boot`, `aurora-firmware`, `avd-fw`) and the rest of Aurora's userspace follow Testing, as Arch's own repositories do; they are not frozen at the train's Stage 2 the way the Fedora Edge snapshot freezes them.
+
+**Closure.** Every deploy that serves both channels (`channel=edge`, and `channel=testing` while an overlay is served) runs `scripts/check-edge-closure.py` against the two databases it would publish. It fails the deploy when an overlay package needs an Aurora package Testing does not serve at that version, when a Testing package needs a version of an overlay package the overlay does not have (libalpm would install the Testing copy), or when the two conflict. Names neither feed carries come from Arch Linux ARM.
+
+**Rollback.** pacman does not downgrade on `-Syu`, so an overlay with older versions never reaches installed Macs. A rollback train bumps the affected recipes' `epoch` or `pkgrel` above the overlay it replaces, and is adopted like any other train.
