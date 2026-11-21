@@ -299,10 +299,11 @@ fi
 if $monitor_free; then
   python3 "$root/scripts/prepare-ctxr-stage2.py" "$root/out/$profile-installer/esp/m1n1"
 fi
-# GRUB finds /boot by UUID on the startup disk only, in the files the
-# installer writes.
+# GRUB finds /boot by UUID on the startup disk only, and every module, font
+# and file its configurations name is there, in the files the installer writes.
 python3 "$root/scripts/check-basics.py" --profile "${profile#arch-}" --esp "$root/out/$profile-installer/esp" \
-  --boot-image "$root/out/$profile-installer/boot.img" --boot-uuid "$boot_uuid"
+  --boot-image "$root/out/$profile-installer/boot.img" --boot-uuid "$boot_uuid" --efi-uuid "$efi_uuid" \
+  --root-uuid "$root_uuid"
 if [[ -n $edge_tag ]]; then
   cp "$root/out/$profile-edge-image-proof.json" "$root/out/$profile-installer/edge-image-proof.json"
 fi
