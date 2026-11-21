@@ -74,7 +74,7 @@ jobs:
               names=[n for n in names if '# aurora-builder: heavy' not in Path('packages',n,'PKGBUILD').read_text().splitlines()]
           print('packages='+json.dumps(names))
           # Any change to the Touch ID stack also replaces stock libfprint and fprintd with it.
-          touchid={'libfprint-aurora','fprintd-aurora','aurora-xart','aurora-touchid-rearm','aurora-sep'}
+          touchid={'libfprint-aurora','fprintd-aurora','aurora-xart','aurora-touchid-rearm','aurora-sep-host-state','aurora-sep'}
           print('touchid='+json.dumps(bool(touchid.intersection(names))))
           PY
       - run: |
