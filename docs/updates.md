@@ -128,7 +128,7 @@ backup files and a conflict without being listed.
 |---|---|---|
 | `track-sources.yml` | every 30 min (`TRACK_SOURCES`), manual | Moves `aura`, `kernel-aurora`, `mesa-aurora` (see `tracking.json`) to their branch tips in one PR on `auto/track-sources`, dispatches `packages.yml` on it, merges when green (`AUTO_MERGE_SOURCES`), mirrors pinned archives to the `source-cache` release |
 | `packages.yml` | push, PR, manual | Native builds; attests every package |
-| `publish.yml` | after a main build and every 6 h (`AUTO_PUBLISH_TESTING`), manual | Resolves the newest qualifying build of every recipe (no run list), carries unchanged recipes from the newest snapshot, refuses version regressions and any depend that neither the set nor asahi-alarm/core/extra/alarm/aur meets (`check-feed-depends.py`), signs in `testing-signing`, releases `testing-YYYYMMDD.N` with an attestation; deploys to testing if `AUTO_DEPLOY_TESTING` or `deploy=yes` |
+| `publish.yml` | after a main build (passed or failed) and every 6 h (`AUTO_PUBLISH_TESTING`), manual | Resolves the newest qualifying build of every recipe (no run list), carries unchanged recipes from the newest snapshot, refuses version regressions and any depend that neither the set nor asahi-alarm/core/extra/alarm/aur meets (`check-feed-depends.py`), signs in `testing-signing`, releases `testing-YYYYMMDD.N` with an attestation; deploys to testing if `AUTO_DEPLOY_TESTING` or `deploy=yes` |
 | `deploy-snapshot.yml` | manual or called | Serves a snapshot on `testing` or `stable`; assembles the whole site (both channels), verifies every signature and attestation, compares with the live database, records `channels.json` on the `channels` branch |
 | `promote.yml` | manual | One click: `stable` gets what `testing` serves, after a `stable-promotion` reviewer approves |
 | `images.yml` | manual | Builds an image from a snapshot; `channel` sets the feed it follows |
@@ -160,6 +160,13 @@ The old manual inputs still work: `publish.yml -f build-run='<ids>' -f release-t
 - Changing `packages.yml`, `scripts/ci-build-package`, `scripts/fetch-base.py`, `images/base.json` or the
   build-system key makes every earlier build ineligible. The next publication then requests a full main
   build before it can complete.
+- A publication that is missing builds requests only the recipes no active build makes from today's
+  recipe (`scripts/request-builds.py`), and requests nothing while a build has not planned yet. A run that
+  failed only in builds of today's recipes has just its failed jobs re-run (up to three attempts), so its
+  other builds count. Otherwise a recipe whose last build failed is requested in a run of its own; after
+  two failures in a row it is named in the
+  run summary with its failed jobs, the publication run fails, and it is not requested again until its
+  recipe changes or those jobs are re-run.
 - A tracker PR is left alone once anyone but the bot pushes to it.
 - `channels.json` on the `channels` branch is the record of what each channel serves; the deployed site
   carries a copy.
