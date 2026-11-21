@@ -166,7 +166,7 @@ The old manual inputs still work: `publish.yml -f build-run='<ids>' -f release-t
 
 ## Edge
 
-Edge is the qualified channel for every M1, M2 and M3 Mac and the MacBook Neo ([aurora-distributions docs/edge-train.md](https://github.com/aurora-silicon/aurora-distributions/blob/main/docs/edge-train.md)). ALARM is rolling, so Edge is an overlay, not a frozen snapshot: `[aurora-edge]` (`https://aurorasilicon.org/alarm-aurora/edge/aarch64`) carries only the kernel and Mesa of the train's aurora-edge pair, and sits before `[aurora]` (Testing), so pacman takes those packages from it and everything else from Testing, which follows the Arch base. A third full copy would also not fit the Pages budget.
+Edge is offered to the Macs whose chip family the adopted Edge train's rows qualify, one named machine per family; every other Mac stays on Nightly. The [Edge train document](https://github.com/aurora-silicon/aurora-distributions/blob/main/docs/edge-train.md) lists the families and machines. ALARM is rolling, so Edge is an overlay, not a frozen snapshot: `[aurora-edge]` (`https://aurorasilicon.org/alarm-aurora/edge/aarch64`) carries only the kernel and Mesa of the train's aurora-edge pair, and sits before `[aurora]` (Testing), so pacman takes those packages from it and everything else from Testing, which follows the Arch base. A third full copy would also not fit the Pages budget.
 
 | Step | How |
 |---|---|
