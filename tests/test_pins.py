@@ -1,8 +1,12 @@
 from pathlib import Path
 import json
 import re
+import sys
 import unittest
 ROOT = Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True  # scripts/ is scanned with bash -n in CI
+sys.path.insert(0, str(ROOT / 'scripts'))
+import updatelib  # noqa: E402
 class PinTests(unittest.TestCase):
     def test_hardware_recipes_match_the_recorded_source_pins(self):
         pins = json.loads((ROOT / 'sources.json').read_text())
@@ -13,6 +17,20 @@ class PinTests(unittest.TestCase):
         self.assertIn(pins['aurora-firstboot']['commit'], firstboot)
         self.assertIn(pins['aurora-firstboot']['sha256'], firstboot)
         self.assertRegex(firstboot, rf"(?m)^pkgver={re.escape(pins['aurora-firstboot']['version'])}$")
+    def test_kernel_depends_on_the_avd_firmware_that_fits_the_t8122_sram_window(self):
+        # linux#2586 maps the T8122 (M3) CM3 SRAM at +0x90000, which only the
+        # 64 KiB v4 image of avd-fw ea8ae7c8 (0.1.aurora4) fits; the older
+        # 0x12000-byte image (0.1.aurora3) fails the probe with -EINVAL.
+        kernel = (ROOT / 'packages/linux-aurora/PKGBUILD').read_text()
+        body = kernel.split('\n_package_kernel() {\n', 1)[1].split('\n}\n', 1)[0]
+        deps = re.search(r"(?m)^\s*depends=\((.*)\)$", body).group(1)
+        self.assertEqual(re.findall(r"'avd-fw([<>=]*)([^']*)'", deps), [('>=', '0.1.aurora4')])
+        self.assertLess(updatelib.alpm_vercmp('0.1.aurora3-1', '0.1.aurora4'), 0)
+        # The recipe builds a 64 KiB v4 image at or above that version.
+        firmware = (ROOT / 'packages/avd-fw/PKGBUILD').read_text()
+        self.assertIn("('v4-t0', 0x10000, '", firmware)
+        version = re.search(r'(?m)^pkgver=(\S+)$', firmware).group(1)
+        self.assertGreaterEqual(updatelib.alpm_vercmp(version, '0.1.aurora4'), 0)
     def test_speakerguardd_v2_switches_by_preset_beside_the_legacy_stack(self):
         pins = json.loads((ROOT / 'sources.json').read_text())['speakerguardd-v2']
         text = (ROOT / 'packages/speakerguardd-v2/PKGBUILD').read_text()
