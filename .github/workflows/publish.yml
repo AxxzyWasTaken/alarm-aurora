@@ -235,6 +235,15 @@ jobs:
           else
             echo 'status=changed' >> "$GITHUB_OUTPUT"
           fi
+      - name: Refuse a package whose depends no repository meets
+        # One unmet depend stops the whole pacman -Syu on the fleet, so a
+        # linux-aurora whose avd-fw floor the set does not meet holds back
+        # every update. The set is checked with the repositories that follow
+        # [aurora] on the fleet.
+        if: steps.versions.outputs.status != 'unchanged'
+        run: |
+          set -euo pipefail
+          python3 scripts/check-feed-depends.py --new input-packages | tee -a "$GITHUB_STEP_SUMMARY"
       - id: bundle
         if: steps.versions.outputs.status != 'unchanged'
         run: |
@@ -418,7 +427,6 @@ jobs:
       pages: write
       id-token: write
       attestations: read
-      actions: write
     uses: ./.github/workflows/deploy-snapshot.yml
     with:
       channel: testing

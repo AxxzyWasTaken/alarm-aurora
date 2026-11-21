@@ -1,4 +1,6 @@
 """Guard source lockstep and exercise lifecycle behavior without a device."""
+import configparser
+import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -62,6 +64,67 @@ class ParityTests(unittest.TestCase):
                                  'ATTR{[module/hid_magicmouse]parameters/haptic_press}="Y"'])
         pkgbuild = (directory / 'PKGBUILD').read_text()
         self.assertIn('"$pkgdir/usr/lib/udev/rules.d/64-aurora-trackpad-clicks.rules"', pkgbuild)
+
+    def test_trackpads_with_kernel_palm_sizes_drop_the_libinput_threshold(self):
+        # One section for every board whose hid-magicmouse marks palms by tool
+        # area itself (the T6041 MacBook Pros); libinput sees only the board
+        # compatible, so the boards are matched by a glob.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        quirks = configparser.ConfigParser(interpolation=None)
+        quirks.optionxform = str
+        quirks.read_string((directory / '60-aurora-trackpad-palms.quirks').read_text())
+        self.assertEqual(len(quirks.sections()), 1)
+        section = dict(quirks[quirks.sections()[0]])
+        self.assertEqual(section, {
+            'MatchUdevType': 'touchpad', 'MatchName': 'Apple*MTP*', 'MatchVendor': '0x05AC',
+            'MatchDeviceTree': 'apple,j61[46]c', 'AttrPalmSizeThreshold': '0'})
+        board = section['MatchDeviceTree']
+        for compatible in ('apple,j614c', 'apple,j616c'):
+            self.assertTrue(fnmatch.fnmatchcase(compatible, board), compatible)
+        # J616s and K116s palms come from the contact class only; other boards report none.
+        for compatible in ('apple,j614s', 'apple,j616s', 'apple,j575c', 'apple,j700', 'apple,j314s'):
+            self.assertFalse(fnmatch.fnmatchcase(compatible, board), compatible)
+        recipe = (directory / 'PKGBUILD').read_text()
+        self.assertIn('install -Dm644 60-aurora-trackpad-palms.quirks '
+                      '"$pkgdir/usr/share/libinput/60-aurora-trackpad-palms.quirks"', recipe)
+
+    def test_mission_control_key_opens_the_overview(self):
+        # Same default as Fedora's aurora-platform-core: F3 (KEY_SCALE,
+        # XF86LaunchA) shows every open window, as Mission Control does.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        override = configparser.ConfigParser(interpolation=None)
+        override.optionxform = str
+        override.read_string((directory / '60_aurora-apple-keys.gschema.override').read_text())
+        self.assertEqual(override.sections(), ['org.gnome.shell.keybindings'])
+        self.assertEqual(dict(override['org.gnome.shell.keybindings']),
+                         {'toggle-overview': "['XF86LaunchA']"})
+        pkgbuild = (directory / 'PKGBUILD').read_text()
+        self.assertIn('"$pkgdir/usr/share/glib-2.0/schemas/60_aurora-apple-keys.gschema.override"',
+                      pkgbuild)
+
+    def test_power_defaults_apply_on_every_apple_silicon_mac(self):
+        # Neither setting depends on the SoC: one unit, wanted by sysinit.target
+        # from the package, skipped by ConditionFirmware off Apple silicon.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        text = (directory / 'aurora-power-defaults.service').read_text()
+        unit = configparser.ConfigParser(interpolation=None, strict=False)
+        unit.optionxform = str
+        unit.read_string(text)
+        self.assertEqual(unit['Unit']['ConditionFirmware'], 'device-tree-compatible(apple,arm-platform)')
+        self.assertEqual(unit['Service']['Type'], 'oneshot')
+        self.assertNotIn('Install', unit)
+        # Same order as the Fedora and NixOS ports: aurora-power-modes takes its
+        # Balanced baseline from the values it finds at start.
+        self.assertEqual(unit['Unit']['Before'].split(),
+                         ['sysinit.target', 'aurora-power-modes.service', 'shutdown.target'])
+        self.assertEqual([l for l in text.splitlines() if l.startswith('ExecStart=')], [
+            "ExecStart=-/usr/bin/sh -c 'echo powersupersave > /sys/module/pcie_aspm/parameters/policy'",
+            'ExecStart=/usr/bin/sysctl -q -w kernel.sched_util_clamp_min_rt_default=0'])
+        recipe = (directory / 'PKGBUILD').read_text()
+        self.assertIn('install -Dm644 aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/aurora-power-defaults.service"', recipe)
+        self.assertIn('ln -s ../aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/sysinit.target.wants/aurora-power-defaults.service"', recipe)
 
     def test_reboot_watchdog_fits_the_apple_hardware_watchdog(self):
         # Same drop-in as Fedora's aurora-platform: the Apple SoC watchdog
