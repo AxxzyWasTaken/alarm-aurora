@@ -97,16 +97,34 @@ class LogindConfigTests(unittest.TestCase):
         self.write('/nix/store/main.conf', main)
         self.write('/nix/store/absolute.conf', absolute)
         self.write('/nix/store/relative.conf', relative)
-        self.link('/etc/systemd/logind.conf', '/nix/store/main.conf')
         self.link('/etc/systemd/logind.conf.d/20-absolute.conf', '/nix/store/absolute.conf')
         self.link('/etc/systemd/logind.conf.d/30-relative.conf', '../../../nix/store/relative.conf')
-        self.assertEqual(basics.logind_texts(self.root), [main, absolute, relative])
+        for target in ('/nix/store/main.conf', '../../nix/store/main.conf'):
+            with self.subTest(main_link=target):
+                self.link('/etc/systemd/logind.conf', target)
+                self.assertEqual(basics.logind_texts(self.root), [main, absolute, relative])
+                (self.base / 'etc/systemd/logind.conf').unlink()
 
     def test_dropin_directory_symlink_stays_in_image(self):
         expected = config(HandlePowerKey='suspend')
         self.write('/nix/store/dropins/50-power.conf', expected)
-        self.link('/etc/systemd/logind.conf.d', '/nix/store/dropins')
-        self.assertEqual(basics.logind_texts(self.root), [expected])
+        self.write('/usr/lib/systemd/logind.conf.d/50-power.conf', config(HandlePowerKey='poweroff'))
+        self.link('/nix/store/mask', '/dev/null')
+        for target in ('/nix/store/dropins', '../../nix/store/dropins'):
+            with self.subTest(directory_link=target):
+                self.link('/etc/systemd/logind.conf.d', target)
+                self.assertEqual(basics.logind_texts(self.root), [expected])
+                (self.base / 'nix/store/dropins/50-power.conf').unlink()
+                self.link('/nix/store/dropins/50-power.conf', '../mask')
+                self.assertEqual(basics.logind_texts(self.root), [])
+                (self.base / 'nix/store/dropins/50-power.conf').unlink()
+                self.write('/nix/store/dropins/50-power.conf', expected)
+                (self.base / 'etc/systemd/logind.conf.d').unlink()
+
+    def test_dangling_dropin_shadows_same_name_vendor_file(self):
+        self.write('/usr/lib/systemd/logind.conf.d/50-power.conf', config(HandlePowerKey='poweroff'))
+        self.link('/etc/systemd/logind.conf.d/50-power.conf', '/missing.conf')
+        self.assertEqual(basics.logind_texts(self.root), [])
 
     def test_dangling_main_falls_back_and_mask_chain_suppresses_dropin(self):
         expected = config(HandlePowerKey='suspend')
@@ -177,7 +195,12 @@ class LogindConfigTests(unittest.TestCase):
         (self.base / 'etc/systemd/logind.conf').unlink()
         self.write('/nix/store/main.conf', config(HandlePowerKey='suspend'))
         self.write('/nix/store/drop.conf', config(HandlePowerKeyLongPress='poweroff'))
-        self.link('/etc/systemd/logind.conf', '/nix/store/main.conf')
+        # v255.4 conf_files_cat() uses host access() for the main file, unlike
+        # v262.2's in-root chase. Keep this comparison confined to the image on
+        # both versions by using relative file links. Absolute links have direct
+        # expected-content coverage above; they are not a portable --root oracle.
+        # https://github.com/systemd/systemd-stable/blob/v255.4/src/shared/pretty-print.c#L393-L402
+        self.link('/etc/systemd/logind.conf', '../../nix/store/main.conf')
         self.link('/run/systemd/logind.conf.d/60-link.conf', '../../../nix/store/drop.conf')
         with self.subTest(image_symlinks=True):
             compare()
