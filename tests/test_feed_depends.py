@@ -177,11 +177,13 @@ class WiringTests(unittest.TestCase):
         self.assertIn('mv input-packages ', steps[names.index('id: bundle')])
 
     def test_upstream_repositories_are_the_ones_the_image_configures(self):
-        build_image = (ROOT / 'scripts/build-image').read_text()
-        server = re.search(r'\[asahi-alarm\]\\nServer = ([^\\]+)\\n', build_image).group(1)
+        # build-image writes the Aurora sections with edgelib.add_sections.
+        self.assertIn('edgelib.add_sections(', (ROOT / 'scripts/build-image').read_text())
+        sections = (ROOT / 'scripts/edgelib.py').read_text()
+        server = re.search(r'\[asahi-alarm\]\\nServer = ([^\\]+)\\n', sections).group(1)
         self.assertEqual(check.UPSTREAM['asahi-alarm'], server.replace('$arch', 'aarch64') + '/asahi-alarm.db')
-        # [aurora] and [asahi-alarm] go before Arch Linux ARM's own repositories.
-        self.assertIn("at=s.index('[core]')", build_image)
+        # [aurora-edge], [aurora] and [asahi-alarm] go before Arch Linux ARM's own repositories.
+        self.assertIn("at = text.index('[core]')", sections)
         self.assertEqual(list(check.UPSTREAM), ['asahi-alarm', 'core', 'extra', 'alarm', 'aur'])
         self.assertTrue(all(url.startswith('https://') for url in check.UPSTREAM.values()))
 

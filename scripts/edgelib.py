@@ -50,25 +50,52 @@ def select(rows):
     return sorted(names)
 
 
+def _array_items(value):
+    """Words of a bash array or scalar assignment, without comments or quotes."""
+    if value.startswith('('):
+        value = value[1:-1]
+    words = []
+    for line in value.splitlines():
+        words += line.split('#', 1)[0].split()
+    return [word.strip('\'"') for word in words if word.strip('\'"')]
+
+
+def _expand(item, pkgbuild):
+    base = re.findall(r'(?m)^pkgbase=([A-Za-z0-9@._+-]+)\s*$', pkgbuild)
+    if base:
+        item = item.replace('${pkgbase}', base[-1]).replace('$pkgbase', base[-1])
+    return item
+
+
 def pkgnames(pkgbuild):
     """The split packages a recipe declares: its last `pkgname=` assignment, read as text.
 
     Only `$pkgbase`/`${pkgbase}` is expanded; anything else is refused rather than run.
     """
-    base = re.findall(r'(?m)^pkgbase=([A-Za-z0-9@._+-]+)\s*$', pkgbuild)
-    values = re.findall(r'(?m)^pkgname=(\([^)]*\)|\S+)\s*$', pkgbuild)
+    values = re.findall(r'(?m)^pkgname=(\([^)]*\)|\S+)', pkgbuild)
     if not values:
         raise ValueError('the recipe declares no pkgname')
-    value = values[-1]
-    items = value[1:-1].split() if value.startswith('(') else [value]
     result = []
-    for item in items:
-        item = item.strip('\'"')
-        if base:
-            item = item.replace('${pkgbase}', base[-1]).replace('$pkgbase', base[-1])
+    for item in _array_items(values[-1]):
+        item = _expand(item, pkgbuild)
         if not re.fullmatch(r'[A-Za-z0-9@._+-]+', item):
             raise ValueError('cannot read pkgname entry %r without running the recipe' % item)
         result.append(item)
+    return result
+
+
+def provided_names(pkgbuild):
+    """Names in a recipe's `provides=` arrays that are literal text (versions dropped).
+
+    A computed name (any other variable) is left to the databases the recipe's
+    packages were published in, which carry every provide as built.
+    """
+    result = []
+    for value in re.findall(r'(?m)^\s*provides\+?=(\([^)]*\)|\S+)', pkgbuild):
+        for item in _array_items(value):
+            name = re.split(r'[<>=]', _expand(item, pkgbuild), maxsplit=1)[0]
+            if re.fullmatch(r'[A-Za-z0-9@._+-]+', name) and name not in result:
+                result.append(name)
     return result
 
 

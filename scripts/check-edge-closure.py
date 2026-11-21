@@ -1,133 +1,160 @@
 #!/usr/bin/env python3
-"""Refuse an [aurora-edge] overlay that does not close over the served [aurora] Testing feed.
+"""Refuse an [aurora-edge] overlay that does not close over what Edge installs resolve against.
 
-Edge installs list [aurora-edge] ahead of [aurora]. libalpm takes a package
-from the first repository that has its name, and resolves a depend from the
-first repository whose package satisfies it. So:
+Edge installs list [aurora-edge] ahead of [aurora] (Testing), and Arch Linux
+ARM's core, extra, alarm and aur plus asahi-alarm after them. libalpm takes a
+package from the first repository that has its name, and resolves a depend from
+the first repository whose package satisfies it. So:
 
-- every depend, conflict and provide of an overlay package that names an
-  Aurora package must be met by the overlay or by Testing (a kernel needing an
-  avd-fw newer than Testing serves breaks every `pacman -Syu`);
-- every Testing package that depends on an overlay name must be satisfied by
-  the overlay's version, or libalpm silently installs Testing's copy;
-- no Testing package may conflict with an overlay package.
+- an overlay depend on an overlay name must be met by the overlay;
+- an overlay depend on any other Aurora name (every pkgname and provide of
+  packages/*, and every package and provide the two feeds serve) must be met by
+  Testing: Aurora packages never come from upstream;
+- every other overlay depend must be met by the upstream repositories;
+- a Testing package that depends on an overlay name must be met by the overlay's
+  version, or libalpm silently installs the Testing copy;
+- no Testing package may conflict with an overlay package, or the reverse.
 
-Names neither feed carries (glibc, kmod, ...) come from Arch Linux ARM and are
-left to the feed's own depends check. The rules match libalpm's: a package of
-that name, or a versioned provides, at a version alpm_vercmp accepts.
+Depends are matched with check-feed-depends.py's libalpm rules.
 
-    check-edge-closure.py --overlay aurora-edge.db.tar.gz --testing aurora.db.tar.gz
+    check-edge-closure.py --overlay aurora-edge.db.tar.gz --testing aurora.db.tar.gz [--upstream NAME=DB ...]
+
+Without --upstream, the upstream databases are downloaded. A missing or
+unreadable database is an error, never a pass.
 """
 import argparse
+import importlib.util
 import io
 from pathlib import Path
-import re
 import sys
 import tarfile
+import tempfile
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+import edgelib  # noqa: E402
 import updatelib as lib  # noqa: E402
 
-RELATION = re.compile(r'([^<>=]+)(?:(>=|<=|=|<|>)(.+))?')
+_spec = importlib.util.spec_from_file_location('check_feed_depends', ROOT / 'scripts/check-feed-depends.py')
+feed = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(feed)
 
 
-def parse(text):
-    match = RELATION.fullmatch(text)
-    if not match:
-        raise ValueError(f'unreadable relation: {text!r}')
-    return match.groups()
+def aurora_names(root=ROOT):
+    """Every package name and literal provide the repository's recipes declare."""
+    names = set()
+    for recipe in sorted(Path(root).glob('packages/*/PKGBUILD')):
+        text = recipe.read_text()
+        names.update(edgelib.pkgnames(text))
+        names.update(edgelib.provided_names(text))
+    return names
 
 
-def version_ok(have, operator, want):
-    result = lib.alpm_vercmp(have, want)
-    return {'>=': result >= 0, '<=': result <= 0, '=': result == 0, '<': result < 0, '>': result > 0}[operator]
+def _package(row, origin):
+    return feed.Package(row['name'], row['version'], row['depends'], row['provides'], origin)
 
 
-def satisfies(package, relation):
-    name, operator, want = relation
-    if package['name'] == name and (operator is None or version_ok(package['version'], operator, want)):
-        return True
-    for provided, provided_operator, version in map(parse, package['provides']):
-        if provided == name and (operator is None or (provided_operator == '=' and version_ok(version, operator, want))):
-            return True
-    return False
+def _names(row):
+    return {row['name'], *(feed.parse(text)[0] for text in row['provides'])}
 
 
-def names(package):
-    return {package['name'], *(parse(text)[0] for text in package['provides'])}
+def problems(overlay, testing, upstream, aurora):
+    """Human-readable closure failures; empty when the overlay is safe to serve beside Testing.
 
-
-def problems(overlay, testing):
-    """Human-readable closure failures; empty when the overlay is safe to serve beside Testing."""
+    `overlay` and `testing` are rows (name, version, depends, conflicts,
+    provides); `upstream` are check-feed-depends Packages; `aurora` the
+    Aurora-owned names.
+    """
     found = []
-    overlay_names = {name for package in overlay for name in names(package)}
-    shadowed = {package['name'] for package in overlay}
-    visible = [package for package in testing if package['name'] not in shadowed]
-    carried = overlay_names | {name for package in testing for name in names(package)}
-    for package in overlay:
-        for text in package['depends']:
-            relation = parse(text)
-            if relation[0] not in carried:
-                continue
+    overlay_names = {name for row in overlay for name in _names(row)}
+    shadowed = {row['name'] for row in overlay}
+    visible = [row for row in testing if row['name'] not in shadowed]
+    owned = set(aurora) | overlay_names | {name for row in testing for name in _names(row)}
+    edge = [_package(row, 'aurora-edge') for row in overlay]
+    served = [_package(row, 'aurora') for row in visible]
+    for row in overlay:
+        for text in row['depends']:
+            relation = feed.parse(text)
             if relation[0] in overlay_names:
-                if not any(satisfies(other, relation) for other in overlay):
-                    found.append(f'{package["name"]} needs {text}, which [aurora-edge] does not meet')
-            elif not any(satisfies(other, relation) for other in visible):
-                found.append(f'{package["name"]} needs {text}, which Testing does not serve')
-    for package in visible:
-        for text in package['depends']:
-            relation = parse(text)
-            if relation[0] in overlay_names and not any(satisfies(other, relation) for other in overlay):
-                found.append(f'Testing {package["name"]} needs {text}: [aurora-edge] does not meet it, '
+                if not any(feed.satisfies(other, relation) for other in edge):
+                    found.append(f'{row["name"]} needs {text}, which [aurora-edge] does not meet')
+            elif relation[0] in owned:
+                if not any(feed.satisfies(other, relation) for other in served):
+                    found.append(f'{row["name"]} needs {text}: an Aurora package Testing does not serve '
+                                 'at that version')
+            elif not any(feed.satisfies(other, relation) for other in upstream):
+                found.append(f'{row["name"]} needs {text}, which no Arch Linux ARM or asahi-alarm repository serves')
+    for row in visible:
+        for text in row['depends']:
+            relation = feed.parse(text)
+            if relation[0] in overlay_names and not any(feed.satisfies(other, relation) for other in edge):
+                found.append(f'Testing {row["name"]} needs {text}: [aurora-edge] does not meet it, '
                              'so pacman would install the Testing copy')
-        for text in package['conflicts']:
-            relation = parse(text)
-            for other in overlay:
-                if satisfies(other, relation):
-                    found.append(f'Testing {package["name"]} conflicts with {text}: [aurora-edge] '
-                                 f'serves {other["name"]} {other["version"]}')
-    for package in overlay:
-        for text in package['conflicts']:
-            relation = parse(text)
-            for other in visible:
-                if satisfies(other, relation):
-                    found.append(f'{package["name"]} conflicts with {text}: Testing serves '
-                                 f'{other["name"]} {other["version"]}')
+        for text in row['conflicts']:
+            relation = feed.parse(text)
+            for other in edge:
+                if feed.satisfies(other, relation):
+                    found.append(f'Testing {row["name"]} conflicts with {text}: [aurora-edge] '
+                                 f'serves {other.name} {other.version}')
+    for row in overlay:
+        for text in row['conflicts']:
+            relation = feed.parse(text)
+            for other in served:
+                if feed.satisfies(other, relation):
+                    found.append(f'{row["name"]} conflicts with {text}: Testing serves {other.name} {other.version}')
     return found
 
 
 def database(data):
-    """Packages of a pacman database archive (desc and, in older databases, depends files)."""
+    """Rows of a pacman database archive: check-feed-depends' packages plus their conflicts."""
     entries = {}
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:*') as archive:
         for member in archive:
             directory, _, filename = member.name.rpartition('/')
             if not member.isfile() or filename not in ('desc', 'depends'):
                 continue
-            fields, key = entries.setdefault(directory, {}), None
+            entry, key = entries.setdefault(directory, {}), None
             for line in archive.extractfile(member).read().decode().splitlines():
                 if line.startswith('%') and line.endswith('%'):
                     key = line.strip('%')
-                    fields[key] = []
-                elif line and key:
-                    fields[key].append(line)
-    return [{'name': fields['NAME'][0], 'version': fields['VERSION'][0],
-             'depends': fields.get('DEPENDS', []), 'conflicts': fields.get('CONFLICTS', []),
-             'provides': fields.get('PROVIDES', [])} for fields in entries.values()]
+                    entry.setdefault(key, [])
+                elif line and key in ('NAME', 'CONFLICTS'):
+                    entry[key].append(line)
+    conflicts = {entry['NAME'][0]: entry.get('CONFLICTS', []) for entry in entries.values() if entry.get('NAME')}
+    packages = feed.database_packages(data, 'db')
+    if not packages:
+        raise ValueError('the database lists no packages')
+    return [{'name': package.name, 'version': package.version, 'depends': list(package.depends),
+             'provides': list(package.provides), 'conflicts': list(conflicts.get(package.name, []))}
+            for package in packages]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--overlay', type=Path, required=True)
     parser.add_argument('--testing', type=Path, required=True)
+    parser.add_argument('--upstream', action='append', default=[], metavar='NAME=DB',
+                        help='a local upstream database; replaces the downloaded set')
     args = parser.parse_args()
-    found = problems(database(args.overlay.read_bytes()), database(args.testing.read_bytes()))
+    # Local databases first: a missing or unreadable one fails before any download.
+    overlay = database(args.overlay.read_bytes())
+    testing = database(args.testing.read_bytes())
+    sources = dict(item.split('=', 1) for item in args.upstream)
+    upstream = []
+    with tempfile.TemporaryDirectory(prefix='aurora-edge-upstream-') as temporary:
+        if not sources:
+            for repo, url in feed.UPSTREAM.items():
+                sources[repo] = Path(temporary) / f'{repo}.db'
+                lib.download([url], sources[repo], attempts=4, timeout=120)
+        for repo, path in sources.items():
+            upstream += feed.database_packages(Path(path).read_bytes(), repo)
+    found = problems(overlay, testing, upstream, aurora_names())
     for line in found:
         print(line, file=sys.stderr)
     if found:
-        raise SystemExit('The [aurora-edge] overlay does not close over the served Testing feed.')
-    print('[aurora-edge] closes over the served Testing feed.')
+        raise SystemExit('The [aurora-edge] overlay does not close over Testing and Arch Linux ARM.')
+    print(f'[aurora-edge] closes over Testing and {", ".join(sorted(sources))}.')
 
 
 if __name__ == '__main__':

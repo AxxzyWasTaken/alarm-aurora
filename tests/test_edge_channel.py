@@ -163,6 +163,7 @@ if __name__ == '__main__':
 
 
 closure = module('edge_closure', 'scripts/check-edge-closure.py')
+feed = module('feed_depends_for_edge', 'scripts/check-feed-depends.py')
 
 
 def package(name, version, depends=(), conflicts=(), provides=()):
@@ -171,47 +172,79 @@ def package(name, version, depends=(), conflicts=(), provides=()):
 
 
 class ClosureTests(unittest.TestCase):
-    """[aurora-edge] must resolve against the served [aurora] Testing feed it is installed with."""
+    """[aurora-edge] must resolve against the served [aurora] Testing feed and Arch Linux ARM."""
 
     def setUp(self):
         self.overlay = [package('linux-aurora', '7.3.0.aurora1-43', depends=('avd-fw>=0.1.aurora3', 'kmod')),
-                        package('mesa-aurora', '1:26.3.0-35', provides=('mesa=26.3.0',))]
+                        package('mesa-aurora', '1:26.3.0-35', depends=('libdrm',), provides=('mesa=26.3.0',))]
         self.testing = [package('linux-aurora', '7.3.0.aurora1-41'), package('avd-fw', '0.1.aurora3-1'),
                         package('aurora-boot', '20261018-20', depends=('linux-aurora>=7.3.0.aurora1-37',)),
                         package('mesa-aurora', '1:26.3.0-30')]
+        self.upstream = [feed.Package('kmod', '34-1', origin='core'), feed.Package('libdrm', '2.4.124-1', origin='extra'),
+                         feed.Package('avd-fw', '0.1-1', origin='extra')]
+        self.aurora = {'linux-aurora', 'avd-fw', 'aurora-boot', 'mesa-aurora', 'aura'}
+
+    def problems(self):
+        return closure.problems(self.overlay, self.testing, self.upstream, self.aurora)
 
     def test_a_consistent_overlay_passes(self):
-        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+        self.assertEqual(self.problems(), [])
 
     def test_an_overlay_depend_testing_does_not_meet_is_refused(self):
-        self.overlay[0]['depends'] = ['avd-fw>=0.1.aurora4']
-        found = closure.problems(self.overlay, self.testing)
+        self.overlay[0]['depends'] = ['avd-fw>=0.1.aurora4', 'kmod']
+        found = self.problems()
         self.assertTrue(found and 'avd-fw>=0.1.aurora4' in found[0], found)
+
+    def test_an_aurora_package_testing_dropped_is_refused(self):
+        # avd-fw is an Aurora recipe: it must come from Aurora's feeds, not from upstream.
+        self.overlay[0]['depends'] = ['avd-fw>=0.1.aurora4', 'kmod']
+        self.testing = [row for row in self.testing if row['name'] != 'avd-fw']
+        found = self.problems()
+        self.assertTrue(found and 'avd-fw' in found[0] and 'Testing' in found[0], found)
+
+    def test_an_upstream_depend_no_repository_serves_is_refused(self):
+        self.upstream = [row for row in self.upstream if row.name != 'libdrm']
+        found = self.problems()
+        self.assertTrue(found and 'libdrm' in found[0] and 'Arch Linux ARM' in found[0], found)
 
     def test_a_testing_floor_above_the_edge_kernel_is_refused(self):
         self.testing[2]['depends'] = ['linux-aurora>=7.3.0.aurora1-44']
-        found = closure.problems(self.overlay, self.testing)
+        found = self.problems()
         self.assertTrue(found and 'aurora-boot' in found[0] and 'Testing copy' in found[0], found)
 
     def test_a_testing_conflict_with_the_edge_kernel_is_refused(self):
         self.testing.append(package('aurora-sep', '0.3-1', conflicts=('linux-aurora<7.3.0.aurora1-44',)))
-        found = closure.problems(self.overlay, self.testing)
+        found = self.problems()
         self.assertTrue(found and 'aurora-sep' in found[0], found)
 
     def test_an_overlay_provide_satisfies_testing(self):
         self.testing.append(package('mesa-demos', '9.0-1', depends=('mesa>=26.3',)))
-        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+        self.assertEqual(self.problems(), [])
         self.testing[-1]['depends'] = ['mesa>=27']
-        self.assertTrue(closure.problems(self.overlay, self.testing))
+        self.assertTrue(self.problems())
 
-    def test_upstream_names_are_out_of_scope(self):
-        # kmod comes from [core]: neither Aurora feed carries it.
-        self.assertEqual(closure.problems(self.overlay, self.testing), [])
+    def test_aurora_names_come_from_every_recipe_in_the_repository(self):
+        names = closure.aurora_names(ROOT)
+        for name in ('avd-fw', 'linux-aurora', 'aurora-userpages', 'vulkan-aurora', 'alsa-card-profiles',
+                     'aurora-stage2-trial', 'linux-asahi'):
+            self.assertIn(name, names)
+        self.assertNotIn('kmod', names)
+
+    def test_a_missing_or_unreadable_database_fails_the_deploy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            served = Path(temporary) / 'site'
+            (served / 'edge/aarch64').mkdir(parents=True)
+            (served / 'testing/aarch64').mkdir(parents=True)
+            (served / 'testing/aarch64/aurora.db.tar.gz').write_bytes(b'not a pacman database')
+            with self.assertRaisesRegex(SystemExit, 'close over'):
+                site.check_closure(served)
+            (served / 'edge/aarch64/aurora-edge.db.tar.gz').write_bytes(b'not a pacman database either')
+            with self.assertRaisesRegex(SystemExit, 'close over'):
+                site.check_closure(served)
 
     def test_the_deploy_runs_the_check_whenever_both_feeds_are_served(self):
         text = (ROOT / 'scripts/channel-site.py').read_text()
-        self.assertIn("if target.get('edge') and target.get('testing'):", text)
-        self.assertIn('check-edge-closure.py', text)
+        self.assertIn("if target.get('edge') and target.get('testing'):\n        check_closure(site)", text)
 
 
 class SplitPackageTests(unittest.TestCase):
@@ -223,6 +256,22 @@ class SplitPackageTests(unittest.TestCase):
         self.assertEqual(edgelib.pkgnames('pkgname=aurora-flatpak-gl\n'), ['aurora-flatpak-gl'])
         with self.assertRaisesRegex(ValueError, 'pkgname'):
             edgelib.pkgnames('pkgname=("$other")\n')
+
+    def test_every_recipe_in_the_repository_is_readable(self):
+        for recipe in sorted((ROOT / 'packages').glob('*/PKGBUILD')):
+            with self.subTest(recipe=recipe.parent.name):
+                self.assertTrue(edgelib.pkgnames(recipe.read_text()))
+        self.assertIn('alsa-card-profiles', edgelib.pkgnames((ROOT / 'packages/pipewire/PKGBUILD').read_text()))
+
+    def test_literal_provides_are_read_and_computed_ones_left_to_the_databases(self):
+        text = '''pkgbase=linux-aurora
+provides=(WIREGUARD-MODULE linux-asahi=${pkgver} "${_ctxr_provides[@]}")
+  provides=("vulkan-asahi=$epoch:$pkgver" 'vulkan-driver'
+            libvulkan_lvp.so  # trailing comment
+            lib$_pwname.so)
+'''
+        self.assertEqual(edgelib.provided_names(text),
+                         ['WIREGUARD-MODULE', 'linux-asahi', 'vulkan-asahi', 'vulkan-driver', 'libvulkan_lvp.so'])
 
     def test_every_split_package_must_be_in_the_overlay(self):
         expected = ['linux-aurora', 'linux-aurora-headers', 'aurora-userpages']

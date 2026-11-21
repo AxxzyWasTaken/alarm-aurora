@@ -106,6 +106,19 @@ def fetch_snapshot(repository, tag, destination, home, fingerprint, channel='tes
     return provenance
 
 
+def check_closure(site):
+    """Every deploy (edge, or testing while an overlay is served) keeps the overlay closed
+    over the Testing feed and the Arch Linux ARM repositories it is installed with. A
+    missing or unreadable database fails the deploy."""
+    closure = subprocess.run([sys.executable, str(ROOT / 'scripts/check-edge-closure.py'),
+                              '--overlay', str(Path(site) / 'edge/aarch64/aurora-edge.db.tar.gz'),
+                              '--testing', str(Path(site) / 'testing/aarch64/aurora.db.tar.gz')],
+                             capture_output=True, text=True)
+    if closure.returncode:
+        print(closure.stdout + closure.stderr, file=sys.stderr)
+        raise SystemExit('The Edge overlay does not close over the feeds this deploy would serve.')
+
+
 def live_database(site_url, channel, work, home):
     """The signed database the channel serves now, or None if it serves none."""
     base = f'{site_url.rstrip("/")}/{channel}/aarch64'
@@ -168,15 +181,7 @@ def assemble(args):
             provenance[channel] = fetch_snapshot(repository, target[channel], site / channel / 'aarch64',
                                                  home, fingerprint, channel)
     if target.get('edge') and target.get('testing'):
-        # Every deploy (edge, or testing while an overlay is served) keeps the
-        # overlay closed over the Testing feed it is installed with.
-        closure = subprocess.run([sys.executable, str(ROOT / 'scripts/check-edge-closure.py'),
-                                  '--overlay', str(site / 'edge/aarch64/aurora-edge.db.tar.gz'),
-                                  '--testing', str(site / 'testing/aarch64/aurora.db.tar.gz')],
-                                 capture_output=True, text=True)
-        if closure.returncode:
-            print(closure.stdout + closure.stderr, file=sys.stderr)
-            raise SystemExit('The Edge overlay does not close over the Testing feed this deploy would serve.')
+        check_closure(site)
     previous = current[args.channel]
     report = ''
     live = live_database(args.site_url, args.channel, Path(args.work) / 'live', home)

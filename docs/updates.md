@@ -178,6 +178,12 @@ Edge is offered to the Macs whose chip family the adopted Edge train's rows qual
 
 **What ALARM Edge qualifies.** ALARM Edge qualifies only the kernel and Mesa: `[aurora-edge]` carries `linux-aurora`, `linux-aurora-headers`, `aurora-userpages`, the four `mesa-aurora` split packages, `mesa-aurora-fex-guest` and `aurora-flatpak-gl` (every split package their recipes declare; `publish-edge.yml` refuses an overlay missing one). The boot chain (`aura`, `uboot-aurora`, `aurora-boot`, `aurora-firmware`, `avd-fw`) and the rest of Aurora's userspace follow Testing, as Arch's own repositories do; they are not frozen at the train's Stage 2 the way the Fedora Edge snapshot freezes them.
 
-**Closure.** Every deploy that serves both channels (`channel=edge`, and `channel=testing` while an overlay is served) runs `scripts/check-edge-closure.py` against the two databases it would publish. It fails the deploy when an overlay package needs an Aurora package Testing does not serve at that version, when a Testing package needs a version of an overlay package the overlay does not have (libalpm would install the Testing copy), or when the two conflict. Names neither feed carries come from Arch Linux ARM.
+**Closure.** Every deploy that serves both channels (`channel=edge`, and `channel=testing` while an overlay is served) runs `scripts/check-edge-closure.py` against the two databases it would publish. It fails the deploy when:
+
+- an overlay package needs an Aurora name (any `pkgname` or provide of `packages/*`, or anything either feed serves) that Testing does not serve at that version, including an Aurora package Testing has dropped;
+- an overlay package needs any other name that Arch Linux ARM's core, extra, alarm and aur and asahi-alarm do not serve (the same libalpm rules as `check-feed-depends.py`);
+- a Testing package needs a version of an overlay package the overlay does not have (libalpm would install the Testing copy);
+- the two conflict;
+- a database is missing or unreadable.
 
 **Rollback.** pacman does not downgrade on `-Syu`, so an overlay with older versions never reaches installed Macs. A rollback train bumps the affected recipes' `epoch` or `pkgrel` above the overlay it replaces, and is adopted like any other train.
