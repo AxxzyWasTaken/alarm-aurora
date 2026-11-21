@@ -22,6 +22,14 @@ off in UPower after that save), a limit other than 80 stays the battery's
 `CHARGE_LIMIT` in `/etc/udev/rules.d/61-upower-charge-limit.rules`, and the old
 file is removed. Without that file it does nothing.
 
+ALARM's migration script is adapted from Fedora's: while migrating a custom
+limit, it reloads and triggers udev even if the persistent rule already matches.
+This lets a same-boot retry apply the rule after an interruption just after its
+rename or before legacy-file removal, without rewriting matching files.
+Reboot normally loads the persistent rule; explicit udev failures still log the
+next-boot fallback. The service and UPower source pin are unchanged. Fedora
+needs a separate follow-up for this retry fix; the scripts are not byte-identical.
+
 ## Fedora 45 lead install
 
 Use the `upower-fedora45` artifact from the successful **UPower Fedora 45** PR
