@@ -14,7 +14,7 @@ filesystems the installer writes):
   lid        logind still suspends on lid close; sleep is not masked
   touchid    sudo, polkit and the lock screen offer a fingerprint, the login
              screen, the console login, su and ssh ask for the password;
-             a short press of the power button suspends
+             a short press of the power button suspends or is explicitly ignored
   GL         factory images leave Mesa driver selection automatic
   ssh        no sshd unit is enabled; remote login is the owner's choice
   units      no unit file or drop-in is executable (systemd warns every boot)
@@ -504,10 +504,13 @@ def check_touchid(root, profile):
         elif wanted and name in FINGERPRINT_SERVICES and not fallback:
             problems.append(f'{name} has no password after the fingerprint')
     logind = logind_texts(root)
-    for key, wanted in (('HandlePowerKey', 'suspend'), ('HandlePowerKeyLongPress', 'poweroff')):
+    # Ignore lets a compositor own the short press; an absent/empty setting
+    # would fall back to logind's poweroff and must still fail image checks.
+    for key, wanted in (('HandlePowerKey', ('suspend', 'ignore')),
+                        ('HandlePowerKeyLongPress', ('poweroff',))):
         value = config_value(logind, '[Login]', key)
-        if value != wanted:
-            problems.append(f'logind {key}={value or "(default)"}, not {wanted}')
+        if value not in wanted:
+            problems.append(f'logind {key}={value or "(default)"}, not {" or ".join(wanted)}')
     if profile == 'kde':
         texts = [root.text(f'{root.etc}/xdg/powerdevilrc') or '']
         for group in ('AC', 'Battery', 'LowBattery'):
