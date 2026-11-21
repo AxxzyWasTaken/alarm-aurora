@@ -113,8 +113,10 @@ class OverrideCleanupTests(unittest.TestCase):
         self.assertIn('aurora-flatpak-gl:', result.stderr)
         self.assertEqual(self.overrides.read_text(), self.original)
         self.assertEqual(self.metadata(), before)
-        # Even queries are unnecessary until the override cleanup succeeds.
-        self.assertFalse((self.state / 'calls').exists())
+        # disable queries the refs and remotes first (#392); nothing past those
+        # read-only queries runs until the override cleanup succeeds.
+        calls = (self.state / 'calls').read_text().splitlines() if (self.state / 'calls').exists() else []
+        self.assertEqual([c.split()[0] for c in calls if c], ['list', 'remotes'][:len(calls)], calls)
         self.assertIn('GL.aurora', (self.state / 'installed').read_text())
         self.assertEqual((self.state / 'remotes').read_text(), 'aurora-gl\n')
 
@@ -252,11 +254,13 @@ class OverrideCleanupTests(unittest.TestCase):
         unrelated = self.root / 'global.tmp'
         unrelated.write_text('unrelated administrator file\n')
         unrelated.chmod(0o600)
-        before = unrelated.stat()
+        # Reading the file may bump atime; compare what a rewrite would change.
+        def identity(st): return (st.st_ino, st.st_size, st.st_mode, st.st_mtime_ns)
+        before = identity(unrelated.stat())
         self.assert_retry()
         self.assertTrue(unrelated.exists())
         self.assertEqual(unrelated.read_text(), 'unrelated administrator file\n')
-        self.assertEqual(unrelated.stat(), before)
+        self.assertEqual(identity(unrelated.stat()), before)
 
 
 if __name__ == '__main__':
