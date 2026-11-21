@@ -1,6 +1,6 @@
 pkgname=aurora-sep
 pkgver=1
-pkgrel=28
+pkgrel=29
 pkgdesc='SEP trusted-key and fingerprint integration for Aurora'
 arch=('any')
 groups=('aurora-platform-apple-silicon')
@@ -39,7 +39,7 @@ sha256sums=('65839f2f4bc36e1f0fac997a27c4fd7f20c040be4ccba7501e36467497ea7397'
             'ec7cb0627f22287d5cb009a7016d07ce4a110a0f3a2db5357a212f9ac3fa1794')
 
 package() {
-  depends=('coreutils' 'fprintd-aurora>=1.94.5' 'keyutils' 'kmod' 'python' 'util-linux' 'grep' 'gawk' 'systemd' 'libfprint-aurora>=1.94.100-6' 'aurora-touchid-rearm' 'aurora-xart')
+  depends=('coreutils' 'fprintd-aurora>=1.94.5' 'keyutils' 'kmod' 'python' 'util-linux' 'grep' 'gawk' 'systemd' 'libfprint-aurora>=1.94.100-6' 'aurora-touchid-rearm' 'aurora-sep-host-state' 'aurora-xart')
   optdepends=('glib2-devel: fingerprint at the GNOME login screen (aurora-sep-greeter-fingerprint.service)')
   # Holds a packaged linux-aurora to one with the module-based SEP driver and
   # leaves a kernel from outside pacman alone; the units skip a kernel without
