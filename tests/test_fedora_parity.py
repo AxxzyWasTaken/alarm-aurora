@@ -88,6 +88,44 @@ class ParityTests(unittest.TestCase):
         self.assertIn('install -Dm644 60-aurora-trackpad-palms.quirks '
                       '"$pkgdir/usr/share/libinput/60-aurora-trackpad-palms.quirks"', recipe)
 
+    def test_mission_control_key_opens_the_overview(self):
+        # Same default as Fedora's aurora-platform-core: F3 (KEY_SCALE,
+        # XF86LaunchA) shows every open window, as Mission Control does.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        override = configparser.ConfigParser(interpolation=None)
+        override.optionxform = str
+        override.read_string((directory / '60_aurora-apple-keys.gschema.override').read_text())
+        self.assertEqual(override.sections(), ['org.gnome.shell.keybindings'])
+        self.assertEqual(dict(override['org.gnome.shell.keybindings']),
+                         {'toggle-overview': "['XF86LaunchA']"})
+        pkgbuild = (directory / 'PKGBUILD').read_text()
+        self.assertIn('"$pkgdir/usr/share/glib-2.0/schemas/60_aurora-apple-keys.gschema.override"',
+                      pkgbuild)
+
+    def test_power_defaults_apply_on_every_apple_silicon_mac(self):
+        # Neither setting depends on the SoC: one unit, wanted by sysinit.target
+        # from the package, skipped by ConditionFirmware off Apple silicon.
+        directory = ROOT / 'packages' / 'aurora-system-fixes'
+        text = (directory / 'aurora-power-defaults.service').read_text()
+        unit = configparser.ConfigParser(interpolation=None, strict=False)
+        unit.optionxform = str
+        unit.read_string(text)
+        self.assertEqual(unit['Unit']['ConditionFirmware'], 'device-tree-compatible(apple,arm-platform)')
+        self.assertEqual(unit['Service']['Type'], 'oneshot')
+        self.assertNotIn('Install', unit)
+        # Same order as the Fedora and NixOS ports: aurora-power-modes takes its
+        # Balanced baseline from the values it finds at start.
+        self.assertEqual(unit['Unit']['Before'].split(),
+                         ['sysinit.target', 'aurora-power-modes.service', 'shutdown.target'])
+        self.assertEqual([l for l in text.splitlines() if l.startswith('ExecStart=')], [
+            "ExecStart=-/usr/bin/sh -c 'echo powersupersave > /sys/module/pcie_aspm/parameters/policy'",
+            'ExecStart=/usr/bin/sysctl -q -w kernel.sched_util_clamp_min_rt_default=0'])
+        recipe = (directory / 'PKGBUILD').read_text()
+        self.assertIn('install -Dm644 aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/aurora-power-defaults.service"', recipe)
+        self.assertIn('ln -s ../aurora-power-defaults.service '
+                      '"$pkgdir/usr/lib/systemd/system/sysinit.target.wants/aurora-power-defaults.service"', recipe)
+
     def test_reboot_watchdog_fits_the_apple_hardware_watchdog(self):
         # Same drop-in as Fedora's aurora-platform: the Apple SoC watchdog
         # (24 MHz, 32-bit) cannot time out later than about 178 s.
@@ -112,10 +150,7 @@ class ParityTests(unittest.TestCase):
             for branch in ('25.08', '26.08'):
                 (refs / branch).touch()
             overrides.write_text('[Environment]\nVK_DRIVER_FILES=/admin/custom.json\nOTHER=keep\n')
-            helper = root / 'helper'
-            helper.write_text((GL / 'aurora-flatpak-gl').read_text()
-                .replace('repo=/usr/share/aurora-flatpak-gl/repo', f'repo={repo}')
-                .replace('overrides=/var/lib/flatpak/overrides/global', f'overrides={overrides}'))
+            helper = GL / 'aurora-flatpak-gl'
             flatpak = root / 'flatpak'
             flatpak.write_text('''#!/bin/bash
 printf '%s\n' "$*" >> "$TEST_LOG"
@@ -127,7 +162,8 @@ esac
 ''')
             flatpak.chmod(0o755)
             env = {**os.environ, 'PATH': str(root) + ':' + os.environ['PATH'],
-                   'TEST_LOG': str(log), 'TEST_OVERRIDES': str(overrides)}
+                   'TEST_LOG': str(log), 'TEST_OVERRIDES': str(overrides),
+                   'AURORA_FLATPAK_GL_REPO': str(repo), 'AURORA_FLATPAK_GL_OVERRIDES': str(overrides)}
             for action in ('enable', 'enable', 'disable'):
                 subprocess.run(['bash', str(helper), action], env=env, check=True)
             calls = log.read_text()
