@@ -28,7 +28,7 @@ size=6G
 [[ $profile == arch-minimal ]] || size=16G
 truncate -s "$size" "$image"
 printf 'label: gpt\nsector-size: 4096\n\nstart=2048,size=131072,type=U\nsize=262144,type=BC13C2FF-59E6-4262-A352-B275FD6F7172\ntype=B921B045-1DF0-41C3-AF44-4C6F280D3FAE\n' | sfdisk --sector-size 4096 "$image"
-loop=''; mountroot=$(mktemp -d)
+loop=''; loop_lock=''; mountroot=$(mktemp -d)
 cleanup() {
   local status=$? clean=1
   trap - EXIT
@@ -39,6 +39,7 @@ cleanup() {
   for path in dev proc sys run boot/efi boot ''; do
     if mountpoint -q "$mountroot${path:+/$path}"; then umount -R "$mountroot${path:+/$path}" || clean=0; fi
   done
+  [[ -z $loop_lock ]] || exec {loop_lock}<&-
   if (( clean )); then
     [[ -z $loop ]] || losetup -d "$loop"
     rmdir "$mountroot"
@@ -47,6 +48,16 @@ cleanup() {
 }
 trap cleanup EXIT
 loop=$(losetup --find --show --partscan --sector-size 4096 "$image")
+# When a writer closes the whole loop device (losetup here), udev's watch has
+# the kernel re-read its partition table, which removes and re-adds the
+# partition nodes, possibly under mkfs. udev skips that re-read while another
+# process holds a BSD lock on the whole disk
+# (https://systemd.io/BLOCK_DEVICE_LOCKING/), and it holds that lock itself
+# while it re-reads, so once this lock is taken the nodes stay put. Hold it
+# until the new filesystems are mounted; a mounted partition makes the kernel
+# refuse a re-read.
+exec {loop_lock}<"$loop"
+flock -x -w 60 "$loop_lock"
 # --partscan reads the partition table before losetup returns, and the kernel
 # creates each partition's node in devtmpfs as it adds the partition. Nothing
 # here reads udev's database or /dev/disk links, so there is no udev event to
@@ -67,6 +78,7 @@ mkdir -p "$mountroot"/{dev,proc,sys,run,boot/efi}
 mount "${loop}p2" "$mountroot/boot"
 mkdir -p "$mountroot/boot/efi"
 mount "${loop}p1" "$mountroot/boot/efi"
+exec {loop_lock}<&-; loop_lock=''
 mount --rbind /dev "$mountroot/dev"
 mount --make-rslave "$mountroot/dev"
 mount -t proc proc "$mountroot/proc"
