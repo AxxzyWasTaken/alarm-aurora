@@ -1,4 +1,5 @@
 """The Neural Engine node's permissions on every install, not only with the ANE tools."""
+import configparser
 import fnmatch
 from pathlib import Path
 import re
@@ -53,10 +54,6 @@ def rule_files(directory):
     return {p.name: p.read_text() for p in directory.iterdir() if p.name.endswith('.rules')}
 
 
-def section(spec, start, end):
-    return spec.split(start, 1)[1].split(end, 1)[0]
-
-
 class AccelPermissionTests(unittest.TestCase):
     NODE = {'SUBSYSTEM': 'accel', 'KERNEL': 'accel0'}
 
@@ -86,6 +83,24 @@ class AccelPermissionTests(unittest.TestCase):
         sysusers = [l.split() for l in (PLATFORM / 'aurora-accel.sysusers').read_text().splitlines()
                     if l and not l.startswith('#')]
         self.assertEqual(sysusers, [['g', 'accel', '-']])
+
+    def test_an_upgrade_reapplies_the_policy_to_existing_nodes(self):
+        hook = configparser.ConfigParser(interpolation=None, strict=False)
+        hook.optionxform = str
+        hook.read_string((PLATFORM / '36-aurora-accel-permissions.hook').read_text())
+        self.assertEqual(hook['Trigger']['Target'], 'usr/lib/udev/rules.d/70-aurora-accel.rules')
+        self.assertEqual(hook['Action']['When'], 'PostTransaction')
+        run = hook['Action']['Exec']
+        # An add event (a change event does not reapply GROUP and MODE), never
+        # from a chroot or without a running udevd, and never failing the upgrade.
+        self.assertIn('udevadm trigger --action=add --subsystem-match=accel', run)
+        self.assertIn('systemd-detect-virt -q --chroot && exit 0', run)
+        self.assertIn('[ -S /run/udev/control ] || exit 0', run)
+        self.assertTrue(run.endswith("|| :'"), run)
+        # After systemd's sysusers (20-) and udev reload (35-) hooks.
+        self.assertGreater('36-aurora-accel-permissions.hook', '35-systemd-udev-reload.hook')
+        pkgbuild = (PLATFORM / 'PKGBUILD').read_text()
+        self.assertIn('"$pkgdir/usr/share/libalpm/hooks/36-aurora-accel-permissions.hook"', pkgbuild)
 
     def test_every_image_installs_system_fixes(self):
         build = (ROOT / 'scripts' / 'build-image').read_text()
