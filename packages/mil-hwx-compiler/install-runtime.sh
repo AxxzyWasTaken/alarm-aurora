@@ -15,7 +15,11 @@ done
 # The private libraries may need only what the package depends on. binutils
 # is in every build root, so a library of its own would load here and then be
 # missing on a Mac without it.
-if readelf -d "$prefix/bin/mil-hwxc" "$private"/*.so* | grep -E 'NEEDED.*lib(bfd|sframe|iberty|ctf|opcodes)'; then
+needed=$(readelf -d "$prefix/bin/mil-hwxc" "$private"/*.so*) || {
+  echo 'mil-hwx-compiler: readelf failed on the runtime' >&2
+  exit 1
+}
+if printf '%s\n' "$needed" | grep -E 'NEEDED.*lib(bfd|sframe|iberty|ctf|opcodes)'; then
   echo 'mil-hwx-compiler: a binutils library is linked in' >&2
   exit 1
 fi
