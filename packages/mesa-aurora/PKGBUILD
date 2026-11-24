@@ -9,7 +9,7 @@ groups=('aurora-platform-apple-silicon')
 url='https://github.com/aurora-silicon/mesa'
 license=('MIT')
 _commit=d4ad4a4dce6d1d23ecd897d6d73fadf9ab618614
-# Matched to the DRM UAPI in aurora-silicon/linux integration/aurora.
+# Matched to the DRM UAPI in aurora-silicon/linux main.
 # Native GL/Honeykrisp link neither LLVM nor SPIRV-Tools; software drivers
 # retain those runtimes in their separate packages. Arch Linux ARM moves both
 # (llvm-libs changes soname every major, SPIRV-Tools has no versioned soname),
