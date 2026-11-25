@@ -68,6 +68,28 @@ class AlarmRecipeTests(unittest.TestCase):
         self.assertTrue(pkgbuild.read_text().startswith(f'# Earlier note about {old[:9]}\n'))
         self.assertEqual(self.field('aura', '_commit'), NEW)
 
+    def test_single_archives_keep_local_sources_and_update_the_checksum(self):
+        tracking = module.tl.load_tracking(ROOT)['sources']
+        for name in ('aurora-diag', 'aurora-firstboot', 'aurora-kbd-light',
+                     'aurora-neo-platform-config', 'aurora-xart', 'upower-aurora'):
+            with self.subTest(name=name):
+                directory = self.root / 'packages' / name
+                local_before = module.local_sources(directory)
+                pkgbuild = directory / 'PKGBUILD'
+                checksums = re.search(r'^sha256sums=\([^)]*\)', pkgbuild.read_text(), re.M)[0]
+                archive_digest = re.search(r"[0-9a-f]{64}", checksums)[0]
+                previous = int(self.field(name, 'pkgrel'))
+                item = self.item(name)
+                checksum = 'd' * 64
+                self.pins[name].update(commit=NEW, sha256=checksum)
+                (self.root / 'sources.json').write_text(json.dumps(self.pins))
+                module.update_recipe(self.root, item, TODAY)
+                self.assertEqual(tracking[name]['merge'], 'manual')
+                self.assertEqual(self.field(name, '_commit'), NEW)
+                self.assertIn(checksums.replace(archive_digest, checksum, 1), pkgbuild.read_text())
+                self.assertEqual(int(self.field(name, 'pkgrel')), previous + 1)
+                self.assertEqual(module.local_sources(directory), local_before)
+
     def test_same_day_aura_update_increments_pkgrel(self):
         pkgbuild = self.root / 'packages/aura/PKGBUILD'
         text = pkgbuild.read_text()
