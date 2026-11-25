@@ -1,13 +1,13 @@
 pkgbase=aurora-bless
 pkgname=('aurora-bless' 'aurora-nvram' 'aurora-btsync' 'aurora-panel-nits')
-pkgver=0.4.4.aurora5
+pkgver=0.4.4.aurora6
 pkgrel=1
 pkgdesc='Aurora Apple Silicon startup-volume selector with Neo NVRAM support'
 arch=('aarch64')
 groups=('aurora-platform-apple-silicon')
 url='https://github.com/aurora-silicon/aurora-bless'
 license=('MIT')
-_commit=9b47a17827854588d458b1dcc8018c66f5c3237f
+_commit=7205ea0ac6569c8b7c2d6916960fcc0da91cfa8d
 makedepends=('git' 'rust' 'cargo' 'make' 'dbus' 'pkgconf')
 source=("aurora-bless::git+$url.git#commit=$_commit")
 sha256sums=('SKIP')
@@ -50,6 +50,7 @@ package_aurora-btsync() {
   install -Dm755 "$(_bin aurora-btsync)" "$pkgdir/usr/bin/aurora-btsync"
   ln -s aurora-btsync "$pkgdir/usr/bin/asahi-btsync"
   install -Dm644 aurora-bless/aurora-btsync/etc/systemd/system/aurora-btsync.service "$pkgdir/usr/lib/systemd/system/aurora-btsync.service"
+  install -Dm644 aurora-bless/aurora-btsync/etc/systemd/system/aurora-btsync-resolve.service "$pkgdir/usr/lib/systemd/system/aurora-btsync-resolve.service"
   ln -s aurora-btsync.service "$pkgdir/usr/lib/systemd/system/asahi-btsync.service"
   install -Dm644 aurora-bless/aurora-btsync/etc/udev/rules.d/96-aurora-btsync.rules "$pkgdir/usr/lib/udev/rules.d/96-aurora-btsync.rules"
   install -Dm644 aurora-bless/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
