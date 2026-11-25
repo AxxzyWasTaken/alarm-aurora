@@ -17,12 +17,18 @@ import trackerlib as tl  # noqa: E402
 import updatelib as lib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+SINGLE_ARCHIVE_RECIPES = (
+    'aurora-diag', 'aurora-firstboot', 'aurora-kbd-light', 'aurora-neo-platform-config',
+    'aurora-xart', 'upower-aurora',
+)
 RECIPES = {'kernel-aurora': 'linux-aurora', 'aura': 'aura', 'mesa-aurora': 'mesa-aurora',
-           'fex-emu': 'fex-emu', 'aurora-steam-native': 'aurora-steam-native'}
+           'fex-emu': 'fex-emu', 'aurora-steam-native': 'aurora-steam-native',
+           **{name: name for name in SINGLE_ARCHIVE_RECIPES}}
 KINDS = {'kernel-aurora': 'kernel', 'mesa-aurora': 'mesa'}
 CI_WORKFLOWS = ['packages.yml']
 # The only files a tracker proposal may change.
-PATCH_PATHS = [r'sources\.json', r'packages/(linux-aurora|aura|mesa-aurora|mesa-aurora-fex-guest|aurora-flatpak-gl|fex-emu|aurora-steam-native)/[^/]+']
+PATCH_PATHS = [r'sources\.json', r'packages/(linux-aurora|aura|mesa-aurora|mesa-aurora-fex-guest|aurora-flatpak-gl|fex-emu|aurora-steam-native)/[^/]+',
+               rf"packages/({'|'.join(SINGLE_ARCHIVE_RECIPES)})/PKGBUILD"]
 # fex-emu tracks by hand (merge: manual): the fork's submodules are pinned at
 # its gitlinks in sources.json and PKGBUILD, and a reviewer moves them with it.
 
@@ -75,7 +81,8 @@ def update_recipe(root, item, today):
     pkgbuild = directory / 'PKGBUILD'
     before = local_sources(directory)
     previous = full_version(pkgbuild.read_text())
-    for path in sorted(p for p in directory.iterdir() if p.is_file()):
+    recipe_files = (pkgbuild,) if key in SINGLE_ARCHIVE_RECIPES else sorted(p for p in directory.iterdir() if p.is_file())
+    for path in recipe_files:
         text = path.read_text()
         # Comments may cite earlier commits; only assignments and data move.
         updated = ''.join(line if line.lstrip().startswith('#') else tl.replace_commit(line, item['old'], item['new'])
@@ -114,6 +121,12 @@ def update_recipe(root, item, today):
         stamp = ''.join(ch for ch in item['new_date'] if ch.isdigit())[:12]
         text, _, _ = tl.bump_assignment(
             text, 'pkgver', lambda value: f'{value.split(".r")[0]}.r{stamp}.{item["new"][:11]}')
+    elif key in SINGLE_ARCHIVE_RECIPES:
+        digest = tl.load_pins(root)[key]['sha256']
+        text, matches = re.subn(r"^sha256sums=\('[0-9a-f]{64}'(?=\s|\))",
+                                f"sha256sums=('{digest}'", text, flags=re.M)
+        if matches != 1:
+            raise ValueError(f'{key}: expected the source archive checksum first in PKGBUILD')
     else:
         raise ValueError(f'no recipe adapter for {key}')
     reset = full_version(text).rsplit('-', 1)[0] != previous.rsplit('-', 1)[0]
